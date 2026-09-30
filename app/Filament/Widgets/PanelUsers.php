@@ -21,15 +21,9 @@ class PanelUsers extends BaseWidget
                 ->descriptionIcon('heroicon-m-users') // آیکون کوچک نسخه ۳
                 ->color('primary'),
 
-            Stat::make('تعداد کاربران ', waitinglist::count())
-                ->description('تعداد کاربران لیست انتظار')
-                ->descriptionIcon('heroicon-m-chat-bubble-left-right')
-                ->color('primary'),
 
-            Stat::make('چت های باز', Conversation::where('status', 'open')->count())
-                ->description('چت‌های فعال')
-                ->descriptionIcon('heroicon-m-chat-bubble-left-right')
-                ->color('primary'),
+
+
         ];
     }
 }

@@ -23,9 +23,9 @@ class ClientResource extends Resource
     protected static ?string $model = Client::class;
 
     protected static ?string $navigationIcon = 'heroicon-o-users';
-    protected static ?string $navigationLabel = 'کاربران';
+    protected static ?string $navigationLabel = 'مشتری ';
     protected static ?string $pluralLabel = 'کاربران';
-    protected static ?string $navigationGroup = 'مدیریت کاربران';
+
 
     protected static ?string $slug = 'clients';
     protected static ?string $modelLabel = 'کاربر';
@@ -99,10 +99,7 @@ class ClientResource extends Resource
                     ->sortable()
                     ->searchable(),
 
-                Tables\Columns\TextColumn::make('addresses.city')
-                    ->label('شهر')
-                    ->sortable()
-                    ->searchable(),
+
 
                 Tables\Columns\TextColumn::make('phone')
                     ->label('شماره موبایل')

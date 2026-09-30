@@ -30,7 +30,7 @@ class AdminPanelProvider extends PanelProvider
             ->path('admin')
             ->login()
             ->colors([
-                'primary' => '#8b5e3c',
+                'primary' => '#7d8566',
                 'danger' => Color::Rose,
                 'success' => Color::Emerald,
                 'warning' => Color::Yellow,
@@ -44,7 +44,7 @@ class AdminPanelProvider extends PanelProvider
             ->widgets([
                 Widgets\AccountWidget::class,
 
-                \App\Filament\Widgets\RecentMessagesWidget::class,
+//                \App\Filament\Widgets\RecentMessagesWidget::class,
                 \App\Filament\Widgets\PanelUsers::class,
 
             ])

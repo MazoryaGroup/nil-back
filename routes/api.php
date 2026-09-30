@@ -4,125 +4,100 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
 use App\Http\Controllers\Api\AuthController;
-use App\Http\Controllers\Api\ProfileController;
-use App\Http\Controllers\Api\AddressController;
-use App\Http\Controllers\Api\ClientApiController;
-use App\Http\Controllers\Api\ProductController;
-use App\Http\Controllers\Api\OrderApiController;
+use App\Http\Controllers\Api\ClientProfileController;
+use App\Http\Controllers\Api\BookingController;
+use App\Http\Controllers\Api\AvailabilityController;
 use App\Http\Controllers\Api\PaymentController;
-use App\Http\Controllers\Api\ContactController;
-use App\Http\Controllers\Api\WaitingListController;
-use App\Http\Controllers\Api\ChatController;
-use App\Http\Controllers\Api\PasswordApiController;
-use App\Http\Controllers\Api\TelegramController;
 
 
-// ================= AUTH =================
-Route::post('/register', [AuthController::class, 'register']);
-Route::post('/verify-otp', [AuthController::class, 'verifyOtp']);
-Route::post('/resend-otp', [AuthController::class, 'resendOtp']);
-Route::post('/login', [AuthController::class, 'login']);
-Route::post('/login-otp', [AuthController::class, 'loginWithOtp']);
-Route::post('/verify-login-otp', [AuthController::class, 'verifyLoginOtp']);
 
+Route::prefix('v1/auth')->group(function () {
 
-// ================= CLIENT =================
-Route::post('/change-password', [ClientApiController::class, 'changePassword']);
+    // Register
+    Route::post('/register/send-code', [
+        AuthController::class,
+        'registerSendCode'
+    ]);
 
+    Route::post('/register/verify', [
+        AuthController::class,
+        'registerVerify'
+    ]);
 
-// ================= PRODUCTS (PUBLIC) =================
-Route::post('/details-product', [ProductController::class, 'detailsByPost']);
-Route::get('/products', [ProductController::class, 'showByget']);
-Route::get('/drops', [ProductController::class, 'drops']);
-Route::get('/categories', [ProductController::class, 'categories']);
+    // Login with Phone
+    Route::post('/login/phone/send-code', [
+        AuthController::class,
+        'loginPhoneSendCode'
+    ]);
 
-Route::prefix('products')->group(function () {
-    Route::get('/latest', [OrderApiController::class, 'latestProducts']);
-    Route::get('/daily-discounts', [OrderApiController::class, 'dailyDiscounts']);
-    Route::get('/popular', [OrderApiController::class, 'popularProducts']);
-    Route::get('/highest-discounts', [OrderApiController::class, 'highestDiscounts']);
-});
+    Route::post('/login/phone/verify', [
+        AuthController::class,
+        'loginPhoneVerify'
+    ]);
+    Route::post('/login', [
+        AuthController::class,
+        'login'
+    ]);
+    Route::post('/forgot-password/send-code', [
+        AuthController::class,
+        'forgotPasswordSendCode'
+    ]);
+    Route::post('/forgot-password/verify', [
+        AuthController::class,
+        'forgotPasswordVerify'
+    ]);
+    Route::post('/forgot-password/reset', [
+        AuthController::class,
+        'forgotPasswordReset'
+    ]);
+    Route::post('/refresh', [
+        AuthController::class,
+        'refresh'
+    ]);
 
+    Route::middleware('auth:api')->group(function () {
 
-// ================= PAYMENT =================
+        Route::get('/me', [
+            AuthController::class,
+            'me'
+        ]);
+        Route::post('/logout', [
+            AuthController::class,
+            'logout'
+        ]);
+        Route::post('/refresh', [
+            AuthController::class,
+            'refresh'
+        ]);
+        Route::get('/profile', [
+            ClientProfileController::class,
+            'show'
+        ]);
+        Route::put('/profile', [
+            ClientProfileController::class,
+            'update'
+        ]);
+        Route::post('/profile/change-phone/send-code', [ClientProfileController::class, 'changePhoneSendCode']);
 
-// PAYMENT
-Route::middleware('auth:api')->group(function () {
-    Route::post('/payment/request', [PaymentController::class, 'requestPayment']);
-});
-
-Route::get('/payment/verify', [PaymentController::class, 'verifyPayment']);
-
-// ================= USER PROFILE =================
-Route::middleware('auth:api')->group(function () {
-
-    Route::get('/profile', [ProfileController::class, 'show']);
-    Route::put('/update-profile', [ProfileController::class, 'update']);
-
-    // addresses
-    Route::prefix('addresses')->group(function () {
-        Route::get('/', [AddressController::class, 'index']);
-        Route::post('/', [AddressController::class, 'store']);
-        Route::put('/{id}', [AddressController::class, 'update']);
-        Route::delete('/{id}', [AddressController::class, 'destroy']);
+        Route::post('/profile/change-phone/verify', [ClientProfileController::class, 'changePhoneVerify']);
     });
 
-    // orders
-    Route::prefix('orders')->group(function () {
-        Route::post('/', [OrderApiController::class, 'store']);
-        Route::get('/{id}', [OrderApiController::class, 'show']);
-    });
-
-    Route::get('/user-orders', [OrderApiController::class, 'ordersByClient']);
-
-    // cart
-    Route::prefix('cart')->group(function () {
-        Route::get('/count', [OrderApiController::class, 'cartCount']);
-        Route::get('/items', [OrderApiController::class, 'cartItems']);
-        Route::post('/add', [OrderApiController::class, 'addToCart']);
-        Route::delete('/remove/{id}', [OrderApiController::class, 'removeFromCart']);
-        Route::put('/update/{id}', [OrderApiController::class, 'updateCartItem']);
-        Route::delete('/clear', [OrderApiController::class, 'clearCart']);
-    });
 });
 
 
-Route::post('/check-password', [PasswordApiController::class, 'check']);
 
-// ================= WAITING LIST =================
-Route::prefix('waiting-list')->group(function () {
-    Route::get('/', [WaitingListController::class, 'index']);
-    Route::get('/{id}', [WaitingListController::class, 'show']);
+Route::middleware('auth:api')->prefix('v1/bookings')->group(function () {
+    Route::get('/', [BookingController::class, 'index']);
+    Route::get('/{id}', [BookingController::class, 'show']);
+    Route::post('/', [BookingController::class, 'store']);
+    Route::post('/{id}/cancel', [BookingController::class, 'cancel']);
+    Route::put('/{id}/reschedule', [BookingController::class, 'reschedule']);
 });
 
-Route::post('/messages', [ContactController::class, 'store']);
-// ================= RATE LIMITED =================
-Route::middleware('throttle:5,1')->group(function () {
-
-    Route::post('/waiting-list', [WaitingListController::class, 'store']);
-    Route::post('/chat/send', [ChatController::class, 'send']);
+Route::middleware('auth:api')->prefix('v1/availability')->group(function () {
+    Route::get('/', [AvailabilityController::class, 'index']);
 });
 
-
-// ================= CHAT =================
-Route::get(
-    '/chat/messages-for-visitor/{conversation:uuid}',
-    [ChatController::class, 'messagesForVisitor']
-);
-
-
-// ================= TELEGRAM =================
-Route::post('/telegram/webhook', [TelegramController::class, 'webhook']);
-
-
-// ================= ADMIN =================
-Route::middleware('auth:sanctum')->group(function () {
-
-    Route::get('/user', fn(Request $request) => $request->user());
-
-    Route::prefix('messages')->group(function () {
-        Route::get('/', [ContactController::class, 'index']);
-        Route::get('/{id}', [ContactController::class, 'show']);
-    });
-
+Route::middleware('auth:api')->prefix('v1/payments')->group(function () {
+    Route::post('/bookings/{bookingId}/deposit', [PaymentController::class, 'deposit']);
 });

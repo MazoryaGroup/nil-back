@@ -8,6 +8,9 @@ use App\Http\Controllers\Api\ClientProfileController;
 use App\Http\Controllers\Api\BookingController;
 use App\Http\Controllers\Api\AvailabilityController;
 use App\Http\Controllers\Api\PaymentController;
+use App\Http\Controllers\Api\WaitingListController;
+use App\Http\Controllers\Api\ContactController;
+use App\Http\Controllers\Api\BlogController;
 
 
 
@@ -100,4 +103,27 @@ Route::middleware('auth:api')->prefix('v1/availability')->group(function () {
 
 Route::middleware('auth:api')->prefix('v1/payments')->group(function () {
     Route::post('/bookings/{bookingId}/deposit', [PaymentController::class, 'deposit']);
+    Route::post('/bookings/{bookingId}/start', [PaymentController::class, 'start']);
+});
+Route::get('/v1/payments/zarinpal/callback', [
+    PaymentController::class,
+    'callback'
+]);
+
+
+Route::prefix('waiting-list')->group(function () {
+
+    Route::post('/', [WaitingListController::class, 'store']);
+
+});
+
+Route::post('/messages', [ContactController::class, 'store']);
+
+
+Route::prefix('v1')->group(function () {
+
+    Route::get('/blogs', [BlogController::class, 'index']);
+
+    Route::get('/blogs/{slug}', [BlogController::class, 'show']);
+
 });

@@ -171,4 +171,53 @@ class PaymentService
             return $payment->fresh();
         });
     }
+    public function setAuthority(
+        Payment $payment,
+        string $authority
+    ): Payment {
+        if ($payment->type !== 'deposit') {
+            throw new RuntimeException(
+                'This payment is not a deposit payment.'
+            );
+        }
+
+        if ($payment->status !== 'pending') {
+            throw new RuntimeException(
+                'Only pending payments can receive an authority.'
+            );
+        }
+
+        if (empty(trim($authority))) {
+            throw new RuntimeException(
+                'ZarinPal authority is required.'
+            );
+        }
+
+        return DB::transaction(function () use ($payment, $authority) {
+
+            $payment = Payment::query()
+                ->where('id', $payment->id)
+                ->lockForUpdate()
+                ->first();
+
+            if (!$payment) {
+                throw new RuntimeException(
+                    'Payment not found.'
+                );
+            }
+
+            if ($payment->status !== 'pending') {
+                throw new RuntimeException(
+                    'Only pending payments can receive an authority.'
+                );
+            }
+
+            $payment->update([
+                'authority' => trim($authority),
+                'gateway' => 'zarinpal',
+            ]);
+
+            return $payment->fresh();
+        });
+    }
 }

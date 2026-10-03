@@ -40,7 +40,7 @@ return [
         'template_id' => env('SMSIR_OTP_TEMPLATE_ID'),
     ],
     'zarinpal' => [
-        'merchant_id' => env('ZARINPAL_MERCHANT_ID'),
+        'merchant_id' => env('ZARINPAL_MERCHANT_KEY'),
         'sandbox' => env('ZARINPAL_SANDBOX', true),
         'callback_url' => env('ZARINPAL_CALLBACK_URL'),
     ],

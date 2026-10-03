@@ -11,7 +11,7 @@ use App\Http\Controllers\Api\PaymentController;
 use App\Http\Controllers\Api\WaitingListController;
 use App\Http\Controllers\Api\ContactController;
 use App\Http\Controllers\Api\BlogController;
-
+use App\Http\Controllers\Api\GalleryController;
 
 
 Route::prefix('v1/auth')->group(function () {
@@ -126,4 +126,10 @@ Route::prefix('v1')->group(function () {
 
     Route::get('/blogs/{slug}', [BlogController::class, 'show']);
 
+});
+
+Route::prefix('v1/gallery')->group(function () {
+    Route::get('/categories', [GalleryController::class, 'categories']);
+    Route::get('/', [GalleryController::class, 'index']);
+    Route::get('/{id}', [GalleryController::class, 'show']);
 });

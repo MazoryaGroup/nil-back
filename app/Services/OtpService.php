@@ -31,7 +31,7 @@ class OtpService
             'phone' => $phone,
             'code' => Hash::make($code),
             'type' => $type,
-            'expires_at' => now()->addMinutes($expireMinutes),
+            'expires_at' => now()->copy()->addMinutes($expireMinutes),
             'attempts' => 0,
         ]);
 

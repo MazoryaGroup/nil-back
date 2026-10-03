@@ -4,15 +4,15 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Client;
+use App\Models\OtpCode;
+use App\Models\PasswordResetToken;
 use App\Services\OtpService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Validator;
-use App\Models\PasswordResetToken;
-use Illuminate\Support\Str;
-use App\Models\OtpCode;
-use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Str;
 
 class AuthController extends Controller
 {
@@ -111,7 +111,6 @@ class AuthController extends Controller
         */
 
         if ($referralCode) {
-
             $referrer = Client::where(
                 'referral_code',
                 $referralCode
@@ -138,15 +137,15 @@ class AuthController extends Controller
             expireMinutes: 2
         );
 
-
         /*
         |--------------------------------------------------------------------------
-        | Store Referral Code on OTP
+        | Store Referral Code on Latest OTP
         |--------------------------------------------------------------------------
         */
 
         $otp = OtpCode::where('phone', $phone)
             ->where('type', 'register')
+            ->whereNull('verified_at')
             ->latest('id')
             ->first();
 
@@ -171,8 +170,6 @@ class AuthController extends Controller
 
     public function registerVerify(Request $request): JsonResponse
     {
-
-
         $validator = Validator::make($request->all(), [
             'phone' => [
                 'required',
@@ -297,7 +294,7 @@ class AuthController extends Controller
 
         /*
         |--------------------------------------------------------------------------
-        | Verify OTP
+        | Verify OTP Code
         |--------------------------------------------------------------------------
         */
 
@@ -320,7 +317,6 @@ class AuthController extends Controller
         $referrerId = null;
 
         if (!empty($otp->referral_code)) {
-
             $referrer = Client::where(
                 'referral_code',
                 strtoupper(trim($otp->referral_code))
@@ -350,7 +346,6 @@ class AuthController extends Controller
             $referrerId,
             $otp
         ) {
-
             $client = Client::create([
                 'phone' => $phone,
                 'name' => $request->name,
@@ -393,11 +388,12 @@ class AuthController extends Controller
             ],
         ], 201);
     }
+
     /*
-|--------------------------------------------------------------------------
-| Login - Send OTP
-|--------------------------------------------------------------------------
-*/
+    |--------------------------------------------------------------------------
+    | Login - Send OTP
+    |--------------------------------------------------------------------------
+    */
 
     public function loginPhoneSendCode(Request $request): JsonResponse
     {
@@ -454,7 +450,6 @@ class AuthController extends Controller
             'message' => 'Verification code sent successfully.',
         ], 200);
     }
-
 
     /*
     |--------------------------------------------------------------------------
@@ -549,11 +544,12 @@ class AuthController extends Controller
             ],
         ], 200);
     }
+
     /*
-|--------------------------------------------------------------------------
-| Login - Email & Password
-|--------------------------------------------------------------------------
-*/
+    |--------------------------------------------------------------------------
+    | Login - Email & Password
+    |--------------------------------------------------------------------------
+    */
 
     public function login(Request $request): JsonResponse
     {
@@ -616,11 +612,12 @@ class AuthController extends Controller
             ],
         ], 200);
     }
+
     /*
-|--------------------------------------------------------------------------
-| Forgot Password - Send OTP
-|--------------------------------------------------------------------------
-*/
+    |--------------------------------------------------------------------------
+    | Forgot Password - Send OTP
+    |--------------------------------------------------------------------------
+    */
 
     public function forgotPasswordSendCode(Request $request): JsonResponse
     {
@@ -677,6 +674,13 @@ class AuthController extends Controller
             'message' => 'Password reset verification code sent successfully.',
         ], 200);
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Forgot Password - Verify OTP
+    |--------------------------------------------------------------------------
+    */
+
     public function forgotPasswordVerify(Request $request): JsonResponse
     {
         $validator = Validator::make($request->all(), [
@@ -685,6 +689,7 @@ class AuthController extends Controller
                 'string',
                 'max:30',
             ],
+
             'code' => [
                 'required',
                 'digits:6',
@@ -712,6 +717,12 @@ class AuthController extends Controller
             ], 404);
         }
 
+        /*
+        |--------------------------------------------------------------------------
+        | Verify OTP
+        |--------------------------------------------------------------------------
+        */
+
         $verified = $this->otpService->verify(
             phone: $phone,
             code: $request->code,
@@ -726,12 +737,22 @@ class AuthController extends Controller
             ], 400);
         }
 
-        // Delete previous unused reset tokens
+        /*
+        |--------------------------------------------------------------------------
+        | Delete Previous Reset Tokens
+        |--------------------------------------------------------------------------
+        */
+
         PasswordResetToken::where('phone', $phone)
             ->whereNull('used_at')
             ->delete();
 
-        // Generate secure reset token
+        /*
+        |--------------------------------------------------------------------------
+        | Generate Secure Reset Token
+        |--------------------------------------------------------------------------
+        */
+
         $resetToken = Str::random(64);
 
         PasswordResetToken::create([
@@ -752,6 +773,13 @@ class AuthController extends Controller
             ],
         ], 200);
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Forgot Password - Reset
+    |--------------------------------------------------------------------------
+    */
+
     public function forgotPasswordReset(Request $request): JsonResponse
     {
         $validator = Validator::make($request->all(), [
@@ -760,10 +788,12 @@ class AuthController extends Controller
                 'string',
                 'max:30',
             ],
+
             'reset_token' => [
                 'required',
                 'string',
             ],
+
             'password' => [
                 'required',
                 'string',
@@ -783,6 +813,12 @@ class AuthController extends Controller
 
         $phone = trim($request->phone);
 
+        /*
+        |--------------------------------------------------------------------------
+        | Find Client
+        |--------------------------------------------------------------------------
+        */
+
         $client = Client::where('phone', $phone)->first();
 
         if (!$client) {
@@ -792,6 +828,12 @@ class AuthController extends Controller
                 'message' => 'No account found with this phone number.',
             ], 404);
         }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Find Reset Token
+        |--------------------------------------------------------------------------
+        */
 
         $hashedToken = hash('sha256', $request->reset_token);
 
@@ -809,6 +851,12 @@ class AuthController extends Controller
             ], 400);
         }
 
+        /*
+        |--------------------------------------------------------------------------
+        | Check Reset Token Expiration
+        |--------------------------------------------------------------------------
+        */
+
         if ($resetToken->expires_at->isPast()) {
             return response()->json([
                 'success' => false,
@@ -817,16 +865,31 @@ class AuthController extends Controller
             ], 400);
         }
 
-        // Update password
+        /*
+        |--------------------------------------------------------------------------
+        | Update Password
+        |--------------------------------------------------------------------------
+        */
+
         $client->password = $request->password;
         $client->save();
 
-        // Mark token as used
+        /*
+        |--------------------------------------------------------------------------
+        | Mark Token As Used
+        |--------------------------------------------------------------------------
+        */
+
         $resetToken->update([
             'used_at' => now(),
         ]);
 
-        // Login automatically after password reset
+        /*
+        |--------------------------------------------------------------------------
+        | Login Automatically
+        |--------------------------------------------------------------------------
+        */
+
         $token = auth('api')->login($client);
 
         return response()->json([
@@ -840,11 +903,19 @@ class AuthController extends Controller
                     'email' => $client->email,
                     'phone' => $client->phone,
                 ],
+
                 'token' => $token,
                 'token_type' => 'Bearer',
             ],
         ], 200);
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Me
+    |--------------------------------------------------------------------------
+    */
+
     public function me(): JsonResponse
     {
         $client = auth('api')->user();
@@ -873,6 +944,13 @@ class AuthController extends Controller
             ],
         ], 200);
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Logout
+    |--------------------------------------------------------------------------
+    */
+
     public function logout(): JsonResponse
     {
         try {
@@ -892,10 +970,16 @@ class AuthController extends Controller
             ], 500);
         }
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Refresh Token
+    |--------------------------------------------------------------------------
+    */
+
     public function refresh(): JsonResponse
     {
         try {
-
             $token = auth('api')->refresh();
 
             return response()->json([
@@ -909,7 +993,6 @@ class AuthController extends Controller
             ], 200);
 
         } catch (\Exception $e) {
-
             return response()->json([
                 'success' => false,
                 'statusCode' => 401,

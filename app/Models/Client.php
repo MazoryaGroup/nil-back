@@ -55,7 +55,7 @@ class Client extends Authenticatable implements JWTSubject
     |--------------------------------------------------------------------------
     */
 
-    public function referrer(): BelongsTo
+    public function referrer()
     {
         return $this->belongsTo(Client::class, 'referrer_id');
     }

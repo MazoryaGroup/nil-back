@@ -84,13 +84,13 @@ class ClientResource extends Resource
     {
         return $table
             ->columns([
-                Tables\Columns\TextColumn::make('first_name')
+                Tables\Columns\TextColumn::make('name')
                     ->label('نام')
                     ->sortable()
                     ->searchable(),
 
-                Tables\Columns\TextColumn::make('last_name')
-                    ->label('فامیلی')
+                Tables\Columns\TextColumn::make('referral_code')
+                    ->label('کد معرفی')
                     ->sortable()
                     ->searchable(),
 
@@ -99,25 +99,26 @@ class ClientResource extends Resource
                     ->sortable()
                     ->searchable(),
 
-
+                Tables\Columns\TextColumn::make('referrer.name')
+                    ->label('معرف')
+                    ->default('-')
+                    ->searchable(),
 
                 Tables\Columns\TextColumn::make('phone')
                     ->label('شماره موبایل')
                     ->sortable()
                     ->searchable(),
-
-
             ])
             ->defaultSort('id', 'desc')
-
             ->filters([
                 //
             ])
-
             ->actions([
                 Tables\Actions\EditAction::make(),
                 Tables\Actions\DeleteAction::make(),
             ])
+
+
 
             ->bulkActions([
                 BulkAction::make('export_selected')

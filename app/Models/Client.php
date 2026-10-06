@@ -83,4 +83,11 @@ class Client extends Authenticatable implements JWTSubject
     {
         return $this->hasMany(\App\Models\Booking::class);
     }
+    public function referralRewardUsages(): HasMany
+    {
+        return $this->hasMany(
+            ReferralRewardUsage::class,
+            'client_id'
+        );
+    }
 }

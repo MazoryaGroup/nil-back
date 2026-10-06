@@ -2,17 +2,16 @@
 
 namespace App\Models;
 
-use Filament\Models\Contracts\FilamentUser; // اضافه شد
-use Filament\Panel; // اضافه شد
+use Filament\Models\Contracts\FilamentUser;
+use Filament\Panel;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
-use Laravel\Sanctum\HasApiTokens;
-use Saade\FilamentFullCalendar\Widgets\FullCalendarWidget;
+use Tymon\JWTAuth\Contracts\JWTSubject;
 
-class User extends Authenticatable implements FilamentUser // این Interface حتما اضافه شود
+class User extends Authenticatable implements FilamentUser, JWTSubject
 {
-    use HasApiTokens, HasFactory, Notifiable;
+    use HasFactory, Notifiable;
 
     protected $fillable = [
         'name',
@@ -29,36 +28,62 @@ class User extends Authenticatable implements FilamentUser // این Interface �
 
     protected $casts = [
         'email_verified_at' => 'datetime',
-        'password' => 'hashed', // در لاراول ۱۰ و ۱۱ این مورد الزامی است
+        'password' => 'hashed',
     ];
 
-    /**
-     * تعیین سطح دسترسی برای ورود به پنل
-     * در نسخه ۳، این متد برای امنیت الزامی است
-     */
-    public function canAccessPanel(Panel $panel): bool
+    /*
+    |--------------------------------------------------------------------------
+    | JWT
+    |--------------------------------------------------------------------------
+    */
+
+    public function getJWTIdentifier()
     {
-        // در اینجا می‌توانید شرط بگذارید، مثلا فقط ایمیل‌های خاص یا نقش ادمین
-        // فعلاً برای تست روی true می‌گذاریم
-        return true;
-        // پیشنهاد: return str_ends_with($this->email, '@gmail.com');
+        return $this->getKey();
     }
 
-    /**
-     * سیستم نوتیفیکیشن در نسخه ۳ کمی هوشمندتر شده
-     */
+    public function getJWTCustomClaims(): array
+    {
+        return [
+            'guard' => 'operator',
+            'role' => $this->role,
+        ];
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Filament Access
+    |--------------------------------------------------------------------------
+    */
+
+    public function canAccessPanel(
+        Panel $panel
+    ): bool {
+        return true;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Filament Notifications
+    |--------------------------------------------------------------------------
+    */
+
     public function getFilamentNotifications(): \Illuminate\Support\Collection
     {
         return $this->unreadNotifications;
     }
-    // این متد را داخل کلاس User اضافه کنید
+
+    /*
+    |--------------------------------------------------------------------------
+    | Admin Check
+    |--------------------------------------------------------------------------
+    */
+
     public function isAdmin(): bool
     {
-        // اگر فیلد خاصی مثل 'is_admin' یا 'role' دارید، اینجا چک کنید
-        // فعلاً برای اینکه ارور رفع شود و بتوانید وارد شوید، آن را روی true می‌گذاریم
         return true;
 
-        // مثال واقعی در آینده:
+        // بعداً:
         // return $this->role === 'admin';
     }
 }

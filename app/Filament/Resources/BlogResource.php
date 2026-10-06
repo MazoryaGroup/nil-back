@@ -3,9 +3,11 @@
 namespace App\Filament\Resources;
 
 use App\Filament\Resources\BlogResource\Pages;
+use App\Helpers\JalaliHelper;
 use App\Models\Artist;
 use App\Models\Blog;
 use App\Models\Client;
+use Ariaieboy\FilamentJalaliDatetimepicker\Forms\Components\JalaliDatePicker;
 use Filament\Forms;
 use Filament\Forms\Form;
 use Filament\Resources\Resource;
@@ -38,10 +40,11 @@ class BlogResource extends Resource
                 Forms\Components\Section::make('Blog Information')
                     ->schema([
 
-                        Forms\Components\DatePicker::make('date')
+                        JalaliDatePicker::make('date')
                             ->label('Date')
-                            ->required()
-                            ->native(false),
+                            ->displayFormat('Y/m/d')
+                            ->native(false)
+                            ->required(),
 
                         Forms\Components\TextInput::make('reading_time')
                             ->label('Reading Time')
@@ -78,16 +81,24 @@ class BlogResource extends Resource
                             ])
                             ->live()
                             ->required()
-                            ->afterStateUpdated(function ($state, callable $set) {
-                                $set('author_id', null);
-                            }),
+                            ->afterStateUpdated(
+                                function ($state, callable $set) {
+                                    $set('author_id', null);
+                                }
+                            ),
 
                         Forms\Components\Select::make('author_id')
                             ->label('Author Name')
                             ->searchable()
                             ->preload()
-                            ->required(fn (callable $get) => $get('author_type') === Artist::class)
-                            ->visible(fn (callable $get) => $get('author_type') === Artist::class)
+                            ->required(
+                                fn (callable $get) =>
+                                    $get('author_type') === Artist::class
+                            )
+                            ->visible(
+                                fn (callable $get) =>
+                                    $get('author_type') === Artist::class
+                            )
                             ->options(function (callable $get) {
 
                                 $type = $get('author_type');
@@ -101,12 +112,15 @@ class BlogResource extends Resource
                                     ->mapWithKeys(function ($artist) {
 
                                         $name = trim(
-                                            ($artist->name ?? '') . ' ' .
-                                            ($artist->family ?? '')
+                                            ($artist->name ?? '')
+                                            . ' '
+                                            . ($artist->family ?? '')
                                         );
 
                                         return [
-                                            $artist->id => $name ?: 'Artist #' . $artist->id,
+                                            $artist->id =>
+                                                $name
+                                                    ?: 'Artist #' . $artist->id,
                                         ];
                                     })
                                     ->toArray();
@@ -115,6 +129,7 @@ class BlogResource extends Resource
                     ])
                     ->columns(2)
                     ->columnSpanFull(),
+
                 /*
                 |--------------------------------------------------------------------------
                 | Blog Images
@@ -280,21 +295,31 @@ class BlogResource extends Resource
         return $table
             ->columns([
 
-
-
                 Tables\Columns\TextColumn::make('id')
                     ->label('شناسه')
                     ->sortable(),
+
                 Tables\Columns\TextColumn::make('translations.title')
                     ->label('موضوع')
                     ->sortable(),
 
+                /*
+                |--------------------------------------------------------------------------
+                | تاریخ وبلاگ - شمسی
+                |--------------------------------------------------------------------------
+                */
+
                 Tables\Columns\TextColumn::make('date')
                     ->label('تاریخ')
-                    ->date('Y-m-d')
+                    ->formatStateUsing(
+                        fn ($state) => $state
+                            ? JalaliHelper::date(
+                                $state,
+                                'Y/m/d'
+                            )
+                            : '-'
+                    )
                     ->sortable(),
-
-
 
                 Tables\Columns\TextColumn::make('author_type')
                     ->label('نویسنده')
@@ -309,28 +334,53 @@ class BlogResource extends Resource
                 Tables\Columns\TextColumn::make('status')
                     ->label('وضعیت')
                     ->badge()
-                    ->color(fn (string $state): string => match ($state) {
-                        'published' => 'success',
-                        'draft' => 'warning',
-                        default => 'gray',
-                    }),
+                    ->color(
+                        fn (string $state): string => match ($state) {
+                            'published' => 'success',
+                            'draft' => 'warning',
+                            default => 'gray',
+                        }
+                    ),
+
+                /*
+                |--------------------------------------------------------------------------
+                | تاریخ ایجاد - شمسی
+                |--------------------------------------------------------------------------
+                */
 
                 Tables\Columns\TextColumn::make('created_at')
                     ->label('Created')
-                    ->dateTime()
+                    ->formatStateUsing(
+                        fn ($state) => $state
+                            ? JalaliHelper::dateTime(
+                                $state,
+                                'Y/m/d H:i'
+                            )
+                            : '-'
+                    )
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
 
             ])
+
             ->actions([
+
                 Tables\Actions\EditAction::make(),
+
                 Tables\Actions\DeleteAction::make(),
+
             ])
+
             ->bulkActions([
+
                 Tables\Actions\BulkActionGroup::make([
+
                     Tables\Actions\DeleteBulkAction::make(),
+
                 ]),
+
             ])
+
             ->defaultSort('date', 'desc');
     }
 

@@ -9,6 +9,7 @@ use Filament\Forms\Form;
 use Filament\Resources\Resource;
 use Filament\Tables;
 use Filament\Tables\Table;
+use App\Helpers\JalaliHelper;
 
 class ContactResource extends Resource
 {
@@ -89,7 +90,11 @@ class ContactResource extends Resource
 
                 Tables\Columns\TextColumn::make('created_at')
                     ->label('تاریخ ثبت')
-                    ->dateTime('Y/m/d H:i')
+                    ->formatStateUsing(
+                        fn ($state) => $state
+                            ? JalaliHelper::dateTime($state, 'Y/m/d H:i')
+                            : '-'
+                    )
                     ->sortable(),
             ])
 

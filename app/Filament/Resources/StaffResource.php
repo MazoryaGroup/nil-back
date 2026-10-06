@@ -3,8 +3,10 @@
 namespace App\Filament\Resources;
 
 use App\Filament\Resources\StaffResource\Pages;
+use App\Helpers\JalaliHelper;
 use App\Models\Staff;
 use App\Models\Service;
+use Ariaieboy\FilamentJalaliDatetimepicker\Forms\Components\JalaliDatePicker;
 use Filament\Forms;
 use Filament\Forms\Form;
 use Filament\Resources\Resource;
@@ -28,6 +30,12 @@ class StaffResource extends Resource
     public static function form(Form $form): Form
     {
         return $form->schema([
+
+            /*
+            |--------------------------------------------------------------------------
+            | اطلاعات پرسنل
+            |--------------------------------------------------------------------------
+            */
 
             Forms\Components\Section::make('اطلاعات پرسنل')
                 ->schema([
@@ -58,6 +66,12 @@ class StaffResource extends Resource
                 ])
                 ->columns(2),
 
+            /*
+            |--------------------------------------------------------------------------
+            | خدمات
+            |--------------------------------------------------------------------------
+            */
+
             Forms\Components\Section::make('خدمات')
                 ->schema([
 
@@ -73,8 +87,9 @@ class StaffResource extends Resource
                                         ->get()
                                         ->mapWithKeys(function (Service $service) {
                                             return [
-                                                $service->id => $service->name
-                                                    ?: 'خدمت شماره ' . $service->id,
+                                                $service->id =>
+                                                    $service->name
+                                                        ?: 'خدمت شماره ' . $service->id,
                                             ];
                                         })
                                         ->toArray()
@@ -107,13 +122,22 @@ class StaffResource extends Resource
                             fn (array $state): ?string =>
                             !empty($state['service_id'])
                                 ? (
-                                Service::find($state['service_id'])?->name
-                                ?? 'خدمت شماره ' . $state['service_id']
+                                Service::find(
+                                    $state['service_id']
+                                )?->name
+                                ?? 'خدمت شماره '
+                            . $state['service_id']
                             )
                                 : null
-                        )
+                        ),
 
                 ]),
+
+            /*
+            |--------------------------------------------------------------------------
+            | برنامه کاری
+            |--------------------------------------------------------------------------
+            */
 
             Forms\Components\Section::make('برنامه کاری')
                 ->schema([
@@ -156,6 +180,12 @@ class StaffResource extends Resource
 
                 ]),
 
+            /*
+            |--------------------------------------------------------------------------
+            | استراحت‌ها
+            |--------------------------------------------------------------------------
+            */
+
             Forms\Components\Section::make('استراحت‌ها')
                 ->schema([
 
@@ -197,6 +227,12 @@ class StaffResource extends Resource
 
                 ]),
 
+            /*
+            |--------------------------------------------------------------------------
+            | مرخصی‌ها
+            |--------------------------------------------------------------------------
+            */
+
             Forms\Components\Section::make('مرخصی‌ها')
                 ->schema([
 
@@ -204,8 +240,16 @@ class StaffResource extends Resource
                         ->relationship()
                         ->schema([
 
-                            Forms\Components\DatePicker::make('leave_date')
+                            /*
+                            |----------------------------------------------------------
+                            | تاریخ مرخصی - شمسی
+                            |----------------------------------------------------------
+                            */
+
+                            JalaliDatePicker::make('leave_date')
                                 ->label('تاریخ')
+                                ->displayFormat('Y/m/d')
+                                ->native(false)
                                 ->required(),
 
                             Forms\Components\TimePicker::make('start_time')
@@ -230,6 +274,7 @@ class StaffResource extends Resource
                         ->collapsible(),
 
                 ]),
+
         ]);
     }
 
@@ -258,25 +303,49 @@ class StaffResource extends Resource
                     ->label('فعال')
                     ->boolean(),
 
+                /*
+                |--------------------------------------------------------------------------
+                | تاریخ ایجاد - شمسی
+                |--------------------------------------------------------------------------
+                */
+
                 Tables\Columns\TextColumn::make('created_at')
-                    ->dateTime('Y-m-d H:i')
+                    ->label('تاریخ ایجاد')
+                    ->formatStateUsing(
+                        fn ($state) => $state
+                            ? JalaliHelper::dateTime(
+                                $state,
+                                'Y/m/d H:i'
+                            )
+                            : '-'
+                    )
                     ->sortable(),
 
             ])
+
             ->filters([
 
                 Tables\Filters\TernaryFilter::make('is_active')
                     ->label('فعال'),
 
             ])
+
             ->actions([
+
                 Tables\Actions\EditAction::make(),
+
                 Tables\Actions\DeleteAction::make(),
+
             ])
+
             ->bulkActions([
+
                 Tables\Actions\BulkActionGroup::make([
+
                     Tables\Actions\DeleteBulkAction::make(),
+
                 ]),
+
             ]);
     }
 
@@ -294,4 +363,3 @@ class StaffResource extends Resource
         ];
     }
 }
-

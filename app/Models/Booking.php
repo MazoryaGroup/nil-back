@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class Booking extends Model
 {
@@ -23,6 +24,8 @@ class Booking extends Model
         'notes',
         'cancelled_at',
         'cancellation_reason',
+        'discount_amount',
+        'total_amount',
     ];
 
     protected $casts = [
@@ -31,6 +34,8 @@ class Booking extends Model
         'deposit_amount' => 'decimal:2',
         'paid_amount' => 'decimal:2',
         'cancelled_at' => 'datetime',
+        'discount_amount' => 'decimal:2',
+        'total_amount' => 'decimal:2',
     ];
 
     /*
@@ -67,5 +72,12 @@ class Booking extends Model
     public function smsLogs(): HasMany
     {
         return $this->hasMany(SmsLog::class);
+    }
+    public function referralRewardUsage(): HasOne
+    {
+        return $this->hasOne(
+            ReferralRewardUsage::class,
+            'booking_id'
+        );
     }
 }

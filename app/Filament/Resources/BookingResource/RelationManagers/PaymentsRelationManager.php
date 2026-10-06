@@ -2,84 +2,100 @@
 
 namespace App\Filament\Resources\BookingResource\RelationManagers;
 
+use App\Helpers\JalaliHelper;
 use App\Models\Client;
 use Filament\Forms;
 use Filament\Forms\Form;
 use Filament\Resources\RelationManagers\RelationManager;
 use Filament\Tables;
 use Filament\Tables\Table;
+use Ariaieboy\FilamentJalaliDatetimepicker\Forms\Components\JalaliDateTimePicker;
 
 class PaymentsRelationManager extends RelationManager
 {
     protected static string $relationship = 'payments';
 
-    protected static ?string $title = 'Payments';
+    protected static ?string $title = 'پرداخت‌ها';
 
     protected static ?string $recordTitleAttribute = 'id';
 
     public function form(Form $form): Form
     {
-        return $form->schema([
+        return $form
+            ->schema([
 
-            Forms\Components\Select::make('client_id')
-                ->label('Client')
-                ->options(
-                    Client::query()
-                        ->orderBy('name')
-                        ->get()
-                        ->mapWithKeys(function (Client $client) {
-                            return [
-                                $client->id => ($client->name ?: 'No Name')
-                                    . ' - '
-                                    . $client->phone,
-                            ];
-                        })
-                        ->toArray()
-                )
-                ->searchable()
-                ->preload()
-                ->required(),
+                Forms\Components\Select::make('client_id')
+                    ->label('مشتری')
+                    ->options(
+                        Client::query()
+                            ->orderBy('name')
+                            ->get()
+                            ->mapWithKeys(function (Client $client) {
+                                return [
+                                    $client->id => ($client->name ?: 'بدون نام')
+                                        . ' - '
+                                        . $client->phone,
+                                ];
+                            })
+                            ->toArray()
+                    )
+                    ->searchable()
+                    ->preload()
+                    ->required(),
 
-            Forms\Components\TextInput::make('amount')
-                ->label('Amount')
-                ->numeric()
-                ->minValue(0)
-                ->required(),
+                Forms\Components\TextInput::make('amount')
+                    ->label('مبلغ')
+                    ->numeric()
+                    ->minValue(0)
+                    ->required(),
 
-            Forms\Components\Select::make('type')
-                ->label('Payment Type')
-                ->options([
-                    'deposit' => 'Deposit',
-                    'remaining' => 'Remaining',
-                    'refund' => 'Refund',
-                ])
-                ->required()
-                ->default('deposit'),
+                Forms\Components\Select::make('type')
+                    ->label('نوع پرداخت')
+                    ->options([
+                        'deposit' => 'بیعانه',
+                        'remaining' => 'تسویه',
+                        'refund' => 'بازپرداخت',
+                    ])
+                    ->required()
+                    ->default('deposit'),
 
-            Forms\Components\Select::make('status')
-                ->label('Status')
-                ->options([
-                    'pending' => 'Pending',
-                    'paid' => 'Paid',
-                    'failed' => 'Failed',
-                    'refunded' => 'Refunded',
-                ])
-                ->required()
-                ->default('pending'),
+                Forms\Components\Select::make('status')
+                    ->label('وضعیت')
+                    ->options([
+                        'pending' => 'در انتظار',
+                        'paid' => 'پرداخت‌شده',
+                        'failed' => 'ناموفق',
+                        'refunded' => 'بازپرداخت‌شده',
+                    ])
+                    ->required()
+                    ->default('pending'),
 
-            Forms\Components\TextInput::make('gateway')
-                ->label('Gateway')
-                ->maxLength(100),
+                Forms\Components\TextInput::make('gateway')
+                    ->label('درگاه')
+                    ->maxLength(100),
 
-            Forms\Components\TextInput::make('transaction_id')
-                ->label('Transaction ID')
-                ->maxLength(255),
+                Forms\Components\TextInput::make('transaction_id')
+                    ->label('شناسه تراکنش')
+                    ->maxLength(255),
 
-            Forms\Components\DateTimePicker::make('paid_at')
-                ->label('Paid At')
-                ->seconds(false),
+                /*
+                |--------------------------------------------------------------------------
+                | زمان پرداخت
+                |--------------------------------------------------------------------------
+                |
+                | فعلاً DateTimePicker استاندارد باقی می‌ماند.
+                | نمایش آن در جدول شمسی شده است.
+                |
+                */
 
-        ])->columns(2);
+                JalaliDateTimePicker::make('paid_at')
+                    ->label('زمان پرداخت')
+                    ->displayFormat('Y/m/d H:i')
+                    ->seconds(false)
+                    ->native(false),
+
+            ])
+            ->columns(2);
     }
 
     public function table(Table $table): Table
@@ -92,20 +108,28 @@ class PaymentsRelationManager extends RelationManager
                     ->sortable(),
 
                 Tables\Columns\TextColumn::make('client.name')
-                    ->label('Client')
+                    ->label('مشتری')
                     ->formatStateUsing(
                         fn ($state, $record) =>
-                        $state ?: 'No Name'
+                        $state ?: 'بدون نام'
                     )
                     ->searchable(),
 
                 Tables\Columns\TextColumn::make('amount')
-                    ->label('Amount')
+                    ->label('مبلغ')
                     ->money('IRR')
                     ->sortable(),
 
                 Tables\Columns\BadgeColumn::make('type')
-                    ->label('Type')
+                    ->label('نوع')
+                    ->formatStateUsing(
+                        fn (?string $state): string => match ($state) {
+                            'deposit' => 'بیعانه',
+                            'remaining' => 'تسویه',
+                            'refund' => 'بازپرداخت',
+                            default => $state ?? '-',
+                        }
+                    )
                     ->colors([
                         'primary' => 'deposit',
                         'success' => 'remaining',
@@ -113,7 +137,16 @@ class PaymentsRelationManager extends RelationManager
                     ]),
 
                 Tables\Columns\BadgeColumn::make('status')
-                    ->label('Status')
+                    ->label('وضعیت')
+                    ->formatStateUsing(
+                        fn (?string $state): string => match ($state) {
+                            'pending' => 'در انتظار',
+                            'paid' => 'پرداخت‌شده',
+                            'failed' => 'ناموفق',
+                            'refunded' => 'بازپرداخت‌شده',
+                            default => $state ?? '-',
+                        }
+                    )
                     ->colors([
                         'warning' => 'pending',
                         'success' => 'paid',
@@ -122,35 +155,75 @@ class PaymentsRelationManager extends RelationManager
                     ]),
 
                 Tables\Columns\TextColumn::make('gateway')
-                    ->label('Gateway'),
+                    ->label('درگاه')
+                    ->placeholder('-'),
 
                 Tables\Columns\TextColumn::make('transaction_id')
-                    ->label('Transaction ID')
-                    ->limit(25),
+                    ->label('شناسه تراکنش')
+                    ->limit(25)
+                    ->placeholder('-'),
+
+                /*
+                |--------------------------------------------------------------------------
+                | زمان پرداخت - شمسی
+                |--------------------------------------------------------------------------
+                */
 
                 Tables\Columns\TextColumn::make('paid_at')
-                    ->label('Paid At')
-                    ->dateTime('Y-m-d H:i')
+                    ->label('زمان پرداخت')
+                    ->formatStateUsing(
+                        fn ($state) => $state
+                            ? JalaliHelper::dateTime(
+                                $state,
+                                'Y/m/d H:i'
+                            )
+                            : '-'
+                    )
                     ->sortable(),
 
+                /*
+                |--------------------------------------------------------------------------
+                | زمان ایجاد - شمسی
+                |--------------------------------------------------------------------------
+                */
+
                 Tables\Columns\TextColumn::make('created_at')
-                    ->label('Created')
-                    ->dateTime('Y-m-d H:i')
+                    ->label('ایجادشده')
+                    ->formatStateUsing(
+                        fn ($state) => $state
+                            ? JalaliHelper::dateTime(
+                                $state,
+                                'Y/m/d H:i'
+                            )
+                            : '-'
+                    )
                     ->sortable(),
 
             ])
             ->headerActions([
+
                 Tables\Actions\CreateAction::make()
-                    ->label('Add Payment'),
+                    ->label('افزودن پرداخت'),
+
             ])
             ->actions([
-                Tables\Actions\EditAction::make(),
-                Tables\Actions\DeleteAction::make(),
+
+                Tables\Actions\EditAction::make()
+                    ->label('ویرایش'),
+
+                Tables\Actions\DeleteAction::make()
+                    ->label('حذف'),
+
             ])
             ->bulkActions([
+
                 Tables\Actions\BulkActionGroup::make([
-                    Tables\Actions\DeleteBulkAction::make(),
+
+                    Tables\Actions\DeleteBulkAction::make()
+                        ->label('حذف انتخاب‌شده‌ها'),
+
                 ]),
+
             ]);
     }
 }

@@ -9,6 +9,7 @@ use Filament\Forms\Form;
 use Filament\Resources\Resource;
 use Filament\Tables;
 use Filament\Tables\Table;
+use App\Helpers\JalaliHelper;
 
 class ServiceResource extends Resource
 {
@@ -98,7 +99,12 @@ class ServiceResource extends Resource
                     ->boolean(),
 
                 Tables\Columns\TextColumn::make('created_at')
-                    ->dateTime('Y-m-d H:i')
+                    ->label('تاریخ ایجاد')
+                    ->formatStateUsing(
+                        fn ($state) => $state
+                            ? JalaliHelper::dateTime($state, 'Y/m/d H:i')
+                            : '-'
+                    )
                     ->sortable(),
             ])
             ->filters([

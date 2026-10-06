@@ -3,14 +3,17 @@
 namespace App\Filament\Resources;
 
 use App\Filament\Resources\BookingResource\Pages;
+use App\Filament\Resources\BookingResource\RelationManagers;
+use App\Helpers\JalaliHelper;
 use App\Models\Booking;
 use App\Models\Client;
+use Ariaieboy\FilamentJalaliDatetimepicker\Forms\Components\JalaliDatePicker;
 use Filament\Forms;
 use Filament\Forms\Form;
 use Filament\Resources\Resource;
 use Filament\Tables;
 use Filament\Tables\Table;
-use App\Filament\Resources\BookingResource\RelationManagers;
+use Ariaieboy\FilamentJalaliDatetimepicker\Forms\Components\JalaliDateTimePicker;
 
 class BookingResource extends Resource
 {
@@ -29,6 +32,12 @@ class BookingResource extends Resource
     public static function form(Form $form): Form
     {
         return $form->schema([
+
+            /*
+            |--------------------------------------------------------------------------
+            | اطلاعات رزرو
+            |--------------------------------------------------------------------------
+            */
 
             Forms\Components\Section::make('اطلاعات رزرو')
                 ->schema([
@@ -51,8 +60,16 @@ class BookingResource extends Resource
                         ->preload()
                         ->required(),
 
-                    Forms\Components\DatePicker::make('booking_date')
-                        ->label('تاریخ')
+                    /*
+                    |--------------------------------------------------------------------------
+                    | تاریخ رزرو - شمسی
+                    |--------------------------------------------------------------------------
+                    */
+
+                    JalaliDatePicker::make('booking_date')
+                        ->label('تاریخ رزرو')
+                        ->displayFormat('Y/m/d')
+                        ->native(false)
                         ->required(),
 
                     Forms\Components\TimePicker::make('start_time')
@@ -67,6 +84,12 @@ class BookingResource extends Resource
 
                 ])
                 ->columns(2),
+
+            /*
+            |--------------------------------------------------------------------------
+            | مالی
+            |--------------------------------------------------------------------------
+            */
 
             Forms\Components\Section::make('مالی')
                 ->schema([
@@ -106,6 +129,12 @@ class BookingResource extends Resource
                 ])
                 ->columns(2),
 
+            /*
+            |--------------------------------------------------------------------------
+            | وضعیت
+            |--------------------------------------------------------------------------
+            */
+
             Forms\Components\Section::make('وضعیت')
                 ->schema([
 
@@ -123,9 +152,21 @@ class BookingResource extends Resource
                         ->required()
                         ->default('pending'),
 
-                    Forms\Components\DateTimePicker::make('cancelled_at')
+                    /*
+                    |--------------------------------------------------------------------------
+                    | فعلاً DateTimePicker اصلی
+                    |--------------------------------------------------------------------------
+                    |
+                    | تاریخ + ساعت لغو را در مرحله بعد به نسخه شمسی DateTime
+                    | تبدیل می‌کنیم تا ساعت و ذخیره Gregorian دچار مشکل نشود.
+                    |
+                    */
+
+                    JalaliDateTimePicker::make('cancelled_at')
                         ->label('زمان لغو')
-                        ->seconds(false),
+                        ->displayFormat('Y/m/d H:i')
+                        ->seconds(false)
+                        ->native(false),
 
                     Forms\Components\Textarea::make('cancellation_reason')
                         ->label('دلیل لغو')
@@ -160,9 +201,20 @@ class BookingResource extends Resource
                     ->label('شماره تلفن')
                     ->searchable(),
 
+                /*
+                |--------------------------------------------------------------------------
+                | تاریخ رزرو - نمایش شمسی
+                |--------------------------------------------------------------------------
+                */
+
                 Tables\Columns\TextColumn::make('booking_date')
                     ->label('تاریخ')
-                    ->date('Y-m-d')
+                    ->formatStateUsing(
+                        fn ($state) => JalaliHelper::date(
+                            $state,
+                            'Y/m/d'
+                        )
+                    )
                     ->sortable(),
 
                 Tables\Columns\TextColumn::make('start_time')
@@ -206,15 +258,27 @@ class BookingResource extends Resource
                         'gray' => 'refunded',
                     ]),
 
+                /*
+                |--------------------------------------------------------------------------
+                | تاریخ ایجاد - نمایش شمسی
+                |--------------------------------------------------------------------------
+                */
+
                 Tables\Columns\TextColumn::make('created_at')
                     ->label('ایجادشده')
-                    ->dateTime('Y-m-d H:i')
+                    ->formatStateUsing(
+                        fn ($state) => JalaliHelper::dateTime(
+                            $state,
+                            'Y/m/d H:i'
+                        )
+                    )
                     ->sortable(),
 
             ])
             ->filters([
 
                 Tables\Filters\SelectFilter::make('status')
+                    ->label('وضعیت')
                     ->options([
                         'pending' => 'در انتظار',
                         'awaiting_payment' => 'در انتظار پرداخت',
@@ -226,6 +290,7 @@ class BookingResource extends Resource
                     ]),
 
                 Tables\Filters\SelectFilter::make('payment_status')
+                    ->label('وضعیت پرداخت')
                     ->options([
                         'pending' => 'در انتظار',
                         'paid' => 'پرداخت‌شده',
@@ -233,25 +298,46 @@ class BookingResource extends Resource
                         'refunded' => 'مستردشده',
                     ]),
 
-                Tables\Filters\Filter::make('booking_date')
-                    ->form([
-                        Forms\Components\DatePicker::make('from')
-                            ->label('از تاریخ'),
+                /*
+                |--------------------------------------------------------------------------
+                | فیلتر تاریخ رزرو - شمسی
+                |--------------------------------------------------------------------------
+                */
 
-                        Forms\Components\DatePicker::make('until')
-                            ->label('تا تاریخ'),
+                Tables\Filters\Filter::make('booking_date')
+                    ->label('تاریخ رزرو')
+                    ->form([
+
+                        JalaliDatePicker::make('from')
+                            ->label('از تاریخ')
+                            ->displayFormat('Y/m/d')
+                            ->native(false),
+
+                        JalaliDatePicker::make('until')
+                            ->label('تا تاریخ')
+                            ->displayFormat('Y/m/d')
+                            ->native(false),
+
                     ])
                     ->query(function ($query, array $data) {
                         return $query
                             ->when(
                                 $data['from'] ?? null,
                                 fn ($query, $date) =>
-                                $query->whereDate('booking_date', '>=', $date)
+                                $query->whereDate(
+                                    'booking_date',
+                                    '>=',
+                                    $date
+                                )
                             )
                             ->when(
                                 $data['until'] ?? null,
                                 fn ($query, $date) =>
-                                $query->whereDate('booking_date', '<=', $date)
+                                $query->whereDate(
+                                    'booking_date',
+                                    '<=',
+                                    $date
+                                )
                             );
                     }),
             ])
@@ -283,4 +369,3 @@ class BookingResource extends Resource
         ];
     }
 }
-

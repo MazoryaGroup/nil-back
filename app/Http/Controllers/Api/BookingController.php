@@ -19,48 +19,44 @@ class BookingController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-    try {
-        $client = auth('api')->user();
+        try {
+            $client = auth('api')->user();
 
-        if (!$client) {
+            if (!$client) {
+                return response()->json([
+                    'success' => false,
+                    'statusCode' => 401,
+                    'message' => 'Unauthenticated.',
+                ], 401);
+            }
+
+            $bookings = $client->bookings()
+                ->with([
+                    'bookingServices.service',
+                    'bookingServices.staff',
+                    'payments',
+                ])
+                ->latest('booking_date')
+                ->latest('start_time')
+                ->get();
+
+            return response()->json([
+                'success' => true,
+                'statusCode' => 200,
+                'message' => 'Bookings retrieved successfully.',
+                'data' => $bookings,
+            ], 200);
+
+        } catch (\Throwable $e) {
             return response()->json([
                 'success' => false,
-                'statusCode' => 401,
-                'message' => 'Unauthenticated.',
-            ], 401);
+                'statusCode' => 500,
+                'message' => 'Failed to retrieve bookings.',
+                'error' => $e->getMessage(),
+            ], 500);
         }
-
-        $bookings = $client->bookings()
-            ->with([
-                'bookingServices.service',
-                'bookingServices.staff',
-                'payments',
-            ])
-            ->latest('booking_date')
-            ->latest('start_time')
-            ->get();
-
-        return response()->json([
-            'success' => true,
-            'statusCode' => 200,
-            'message' => 'Bookings retrieved successfully.',
-            'data' => $bookings,
-        ], 200);
-
-    } catch (\Throwable $e) {
-        return response()->json([
-            'success' => false,
-            'statusCode' => 500,
-            'message' => 'Failed to retrieve bookings.',
-            'error' => $e->getMessage(),
-        ], 500);
     }
-}
 
-
-    /**
-     * Create a new booking
-     */
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -72,6 +68,17 @@ class BookingController extends Controller
             'notes' => [
                 'nullable',
                 'string',
+            ],
+
+            'discount_code' => [
+                'nullable',
+                'string',
+                'max:100',
+            ],
+
+            'use_referral_reward' => [
+                'nullable',
+                'boolean',
             ],
 
             'services' => [
@@ -98,6 +105,22 @@ class BookingController extends Controller
             ],
         ]);
 
+        $discountCode = $validated['discount_code'] ?? null;
+
+        $useReferralReward =
+            $validated['use_referral_reward'] ?? false;
+
+        if (
+            $discountCode !== null &&
+            trim($discountCode) !== '' &&
+            $useReferralReward
+        ) {
+            throw ValidationException::withMessages([
+                'discount' =>
+                    'Discount code and referral reward cannot be used together.',
+            ]);
+        }
+
         try {
             $client = auth('api')->user();
 
@@ -114,6 +137,8 @@ class BookingController extends Controller
                 date: $validated['booking_date'],
                 services: $validated['services'],
                 notes: $validated['notes'] ?? null,
+                discountCode: $discountCode,
+                useReferralReward: $useReferralReward,
             );
 
             return response()->json([
@@ -124,7 +149,6 @@ class BookingController extends Controller
             ], 201);
 
         } catch (ValidationException $e) {
-
             return response()->json([
                 'success' => false,
                 'statusCode' => 422,
@@ -133,7 +157,6 @@ class BookingController extends Controller
             ], 422);
 
         } catch (\Throwable $e) {
-
             return response()->json([
                 'success' => false,
                 'statusCode' => 500,
@@ -143,9 +166,6 @@ class BookingController extends Controller
         }
     }
 
-    /**
-     * Cancel booking
-     */
     public function cancel(Request $request, int $id): JsonResponse
     {
         $validated = $request->validate([
@@ -181,7 +201,6 @@ class BookingController extends Controller
             ], 200);
 
         } catch (ValidationException $e) {
-
             return response()->json([
                 'success' => false,
                 'statusCode' => 422,
@@ -190,7 +209,6 @@ class BookingController extends Controller
             ], 422);
 
         } catch (\Throwable $e) {
-
             return response()->json([
                 'success' => false,
                 'statusCode' => 500,
@@ -200,9 +218,6 @@ class BookingController extends Controller
         }
     }
 
-    /**
-     * Reschedule booking
-     */
     public function reschedule(Request $request, int $id): JsonResponse
     {
         $validated = $request->validate([
@@ -243,7 +258,6 @@ class BookingController extends Controller
             ], 200);
 
         } catch (ValidationException $e) {
-
             return response()->json([
                 'success' => false,
                 'statusCode' => 422,
@@ -252,7 +266,6 @@ class BookingController extends Controller
             ], 422);
 
         } catch (\Throwable $e) {
-
             return response()->json([
                 'success' => false,
                 'statusCode' => 500,
@@ -261,6 +274,7 @@ class BookingController extends Controller
             ], 500);
         }
     }
+
     public function show(int $id): JsonResponse
     {
         try {

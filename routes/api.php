@@ -12,6 +12,8 @@ use App\Http\Controllers\Api\WaitingListController;
 use App\Http\Controllers\Api\ContactController;
 use App\Http\Controllers\Api\BlogController;
 use App\Http\Controllers\Api\GalleryController;
+use App\Http\Controllers\Api\OfflineSyncController;
+use App\Http\Controllers\Api\OperatorAuthController;
 
 
 Route::prefix('v1/auth')->group(function () {
@@ -132,4 +134,78 @@ Route::prefix('v1/gallery')->group(function () {
     Route::get('/categories', [GalleryController::class, 'categories']);
     Route::get('/', [GalleryController::class, 'index']);
     Route::get('/{id}', [GalleryController::class, 'show']);
+});
+
+
+
+
+/*
+|--------------------------------------------------------------------------
+| Offline Sync
+|--------------------------------------------------------------------------
+*/
+
+/*
+|--------------------------------------------------------------------------
+| Offline Sync - Operator Protected
+|--------------------------------------------------------------------------
+*/
+
+Route::middleware('auth:operator')
+    ->prefix('offline-sync')
+    ->group(function () {
+
+        Route::post('/', [
+            OfflineSyncController::class,
+            'sync'
+        ]);
+
+        Route::post('/batch', [
+            OfflineSyncController::class,
+            'batch'
+        ]);
+
+        Route::post('/{offlineId}/retry', [
+            OfflineSyncController::class,
+            'retry'
+        ]);
+
+        Route::get('/{offlineId}', [
+            OfflineSyncController::class,
+            'status'
+        ]);
+    });
+
+/*
+|--------------------------------------------------------------------------
+| Operator Authentication
+|--------------------------------------------------------------------------
+*/
+
+Route::prefix('operator')->group(function () {
+
+    // Public
+    Route::post('/login', [
+        OperatorAuthController::class,
+        'login'
+    ]);
+
+    // Protected
+    Route::middleware('auth:operator')->group(function () {
+
+        Route::get('/me', [
+            OperatorAuthController::class,
+            'me'
+        ]);
+
+        Route::post('/refresh', [
+            OperatorAuthController::class,
+            'refresh'
+        ]);
+
+        Route::post('/logout', [
+            OperatorAuthController::class,
+            'logout'
+        ]);
+    });
 });

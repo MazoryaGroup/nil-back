@@ -37,7 +37,16 @@ return [
     'smsir' => [
         'api_key' => env('SMSIR_API_KEY'),
         'line_number' => env('SMSIR_LINE_NUMBER'),
-        'template_id' => env('SMSIR_OTP_TEMPLATE_ID'),
+
+        'templates' => [
+            'otp' => env('SMSIR_OTP_TEMPLATE_ID'),
+            'booking_confirmed' => env('SMSIR_BOOKING_CONFIRMED_TEMPLATE_ID'),
+            'booking_cancelled' => env('SMSIR_BOOKING_CANCELLED_TEMPLATE_ID'),
+            'booking_rescheduled' => env('SMSIR_BOOKING_RESCHEDULED_TEMPLATE_ID'),
+            'reminder_24h' => env('SMSIR_REMINDER_24H_TEMPLATE_ID'),
+            'reminder_2h' => env('SMSIR_REMINDER_2H_TEMPLATE_ID'),
+            'payment_success' => env('SMSIR_PAYMENT_SUCCESS_TEMPLATE_ID'),
+        ],
     ],
     'zarinpal' => [
         'merchant_id' => env('ZARINPAL_MERCHANT_KEY'),

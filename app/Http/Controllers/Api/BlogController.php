@@ -223,7 +223,7 @@ class BlogController extends Controller
             ],
 
             /*
-             * انگلیسی
+             * English
              */
             'en.title_1' => [
                 'required',
@@ -266,7 +266,6 @@ class BlogController extends Controller
 
         /*
          * نویسنده همیشه Artist است
-         * چون این endpoint برای Artist لاگین‌شده است.
          */
         $blog->author_type = Artist::class;
         $blog->author_id = $artist->id;
@@ -279,7 +278,7 @@ class BlogController extends Controller
         if ($request->hasFile('image_1')) {
             $blog->image_1 = $request
                 ->file('image_1')
-                ->store('blogs', 'public');
+                ->store('blogs', 'api_public');
         }
 
         /*
@@ -288,7 +287,7 @@ class BlogController extends Controller
         if ($request->hasFile('image_2')) {
             $blog->image_2 = $request
                 ->file('image_2')
-                ->store('blogs', 'public');
+                ->store('blogs', 'api_public');
         }
 
         $blog->save();
@@ -318,7 +317,7 @@ class BlogController extends Controller
         ]);
 
         /*
-         * انگلیسی
+         * English
          */
         $blog->translations()->create([
             'locale' => 'en',
@@ -466,7 +465,7 @@ class BlogController extends Controller
             ],
 
             /*
-             * انگلیسی
+             * English
              */
             'en.title_1' => [
                 'sometimes',
@@ -524,13 +523,13 @@ class BlogController extends Controller
         if ($request->hasFile('image_1')) {
 
             if ($blog->image_1) {
-                Storage::disk('public')
+                Storage::disk('api_public')
                     ->delete($blog->image_1);
             }
 
             $blog->image_1 = $request
                 ->file('image_1')
-                ->store('blogs', 'public');
+                ->store('blogs', 'api_public');
         }
 
         /*
@@ -539,13 +538,13 @@ class BlogController extends Controller
         if ($request->hasFile('image_2')) {
 
             if ($blog->image_2) {
-                Storage::disk('public')
+                Storage::disk('api_public')
                     ->delete($blog->image_2);
             }
 
             $blog->image_2 = $request
                 ->file('image_2')
-                ->store('blogs', 'public');
+                ->store('blogs', 'api_public');
         }
 
         $blog->save();
@@ -613,7 +612,7 @@ class BlogController extends Controller
         }
 
         /*
-         * Translation انگلیسی
+         * Translation English
          */
         if (isset($validated['en'])) {
 
@@ -731,18 +730,17 @@ class BlogController extends Controller
          * حذف تصاویر
          */
         if ($blog->image_1) {
-            Storage::disk('public')
+            Storage::disk('api_public')
                 ->delete($blog->image_1);
         }
 
         if ($blog->image_2) {
-            Storage::disk('public')
+            Storage::disk('api_public')
                 ->delete($blog->image_2);
         }
 
         /*
-         * translations به دلیل
-         * ON DELETE CASCADE حذف می‌شوند.
+         * translations با ON DELETE CASCADE حذف می‌شوند.
          */
         $blog->delete();
 
@@ -767,10 +765,6 @@ class BlogController extends Controller
 
         /*
          * Wachaar
-         *
-         * نکته مهم:
-         * اینجا دیگر به $blog->author دست نمی‌زنیم.
-         * بنابراین Laravel دنبال کلاس "wachaar" نمی‌گردد.
          */
         if ($blog->author_type === 'wachaar') {
 
@@ -809,12 +803,12 @@ class BlogController extends Controller
             'reading_time' => $blog->reading_time,
 
             'image_1' => $blog->image_1
-                ? Storage::disk('public')
+                ? Storage::disk('api_public')
                     ->url($blog->image_1)
                 : null,
 
             'image_2' => $blog->image_2
-                ? Storage::disk('public')
+                ? Storage::disk('api_public')
                     ->url($blog->image_2)
                 : null,
 
@@ -857,7 +851,6 @@ class BlogController extends Controller
 
         /*
          * Create / Update
-         *
          * هر دو زبان
          */
         $data['translations'] = $blog->translations

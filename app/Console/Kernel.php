@@ -20,7 +20,7 @@ class Kernel extends ConsoleKernel
         $schedule->command('app:sync-google-calendar')->everyFifteenMinutes();
 
         // دستور یادآوری که قبلاً نوشتیم
-        $schedule->command('app:send-daily-reminders')->dailyAt('22:00');
+        $schedule->command('app:send-daily-reminders')->everyFifteenMinutes();
     }
 
     /**

@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "1606f9eaaa9e7cfd48c93ca5f0de1cca",
+    "content-hash": "d25e0c38159ac21efd42f05ce90e0a96",
     "packages": [
         {
             "name": "anourvalar/eloquent-serialize",
@@ -923,6 +923,69 @@
                 }
             ],
             "time": "2025-08-20T19:15:30+00:00"
+        },
+        {
+            "name": "cryptommer/smsir",
+            "version": "v1.2.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/cryptommer/smsir.git",
+                "reference": "315e9851b1651a3d02dee37e83aa68fa34dd8b6d"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/cryptommer/smsir/zipball/315e9851b1651a3d02dee37e83aa68fa34dd8b6d",
+                "reference": "315e9851b1651a3d02dee37e83aa68fa34dd8b6d",
+                "shasum": ""
+            },
+            "require": {
+                "ext-json": "*",
+                "guzzlehttp/guzzle": "*",
+                "illuminate/support": "*",
+                "php": "^7.0|^8.0"
+            },
+            "require-dev": {
+                "orchestra/testbench": "^6.0",
+                "phpunit/phpunit": "^9.0"
+            },
+            "type": "library",
+            "extra": {
+                "laravel": {
+                    "aliases": {
+                        "Smsir": "Smsir"
+                    },
+                    "providers": [
+                        "Cryptommer\\Smsir\\SmsirServiceProvider"
+                    ]
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "Cryptommer\\Smsir\\": "src"
+                }
+            },
+            "notification-url": "https://packagist.org/downloads/",
+            "license": [
+                "MIT"
+            ],
+            "authors": [
+                {
+                    "name": "Pouya Biglari",
+                    "email": "cyberman9000@gmail.com",
+                    "role": "Developer"
+                }
+            ],
+            "description": "Official sms.ir New Panel laravel repository",
+            "homepage": "https://github.com/cryptommer/Smsir",
+            "keywords": [
+                "cryptommer",
+                "smsir"
+            ],
+            "support": {
+                "issues": "https://github.com/cryptommer/smsir/issues",
+                "source": "https://github.com/cryptommer/smsir/tree/v1.2.0"
+            },
+            "time": "2024-07-22T18:02:31+00:00"
         },
         {
             "name": "danharrin/date-format-converter",

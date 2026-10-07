@@ -7,7 +7,6 @@ use App\Models\Service;
 use App\Services\BookingAvailabilityService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Validation\ValidationException;
 
 class AvailabilityController extends Controller
 {
@@ -23,16 +22,27 @@ class AvailabilityController extends Controller
         $validated = $request->validate([
             'staff_id' => ['required', 'integer', 'exists:staff,id'],
             'service_id' => ['required', 'integer', 'exists:services,id'],
-            'booking_date' => ['required', 'date_format:Y-m-d'],
+            'date' => ['required', 'date_format:Y-m-d'],
             'interval' => ['nullable', 'integer', 'min:5'],
         ]);
 
         try {
-            $service = Service::findOrFail($validated['service_id']);
+            $service = Service::query()
+                ->where('id', $validated['service_id'])
+                ->where('is_active', true)
+                ->first();
+
+            if (!$service) {
+                return response()->json([
+                    'success' => false,
+                    'statusCode' => 404,
+                    'message' => 'Service not found or inactive.',
+                ], 404);
+            }
 
             $slots = $this->availabilityService->getAvailableSlots(
                 staffId: (int) $validated['staff_id'],
-                date: $validated['booking_date'],
+                date: $validated['date'],
                 duration: (int) $service->duration,
                 interval: (int) ($validated['interval'] ?? 30),
             );
@@ -44,14 +54,6 @@ class AvailabilityController extends Controller
                 'data' => $slots,
             ], 200);
 
-        } catch (ValidationException $e) {
-            return response()->json([
-                'success' => false,
-                'statusCode' => 422,
-                'message' => 'Validation failed.',
-                'errors' => $e->errors(),
-            ], 422);
-
         } catch (\Throwable $e) {
             return response()->json([
                 'success' => false,
@@ -62,4 +64,3 @@ class AvailabilityController extends Controller
         }
     }
 }
-

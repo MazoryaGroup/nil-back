@@ -13,6 +13,9 @@ use App\Services\ReferralRewardService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
+use App\Models\AccountingAuditLog;
+use Illuminate\Support\Facades\Log;
+use Morilog\Jalali\Jalalian;
 
 class BookingService
 {
@@ -538,26 +541,23 @@ class BookingService
                 'completed',
                 'rejected',
                 'no_show',
-            ])) {
+            ], true)) {
                 throw ValidationException::withMessages([
-                    'booking' =>
-                        'This booking cannot be cancelled.',
+                    'booking' => 'This booking cannot be cancelled.',
                 ]);
             }
 
-            $bookingStart =
-                Carbon::createFromFormat(
-                    'Y-m-d H:i:s',
-                    $booking->booking_date->format('Y-m-d')
-                    . ' '
-                    . $booking->start_time
-                );
+            $bookingStart = Carbon::createFromFormat(
+                'Y-m-d H:i:s',
+                $booking->booking_date->format('Y-m-d')
+                . ' '
+                . $booking->start_time
+            );
 
-            $hoursUntilBooking =
-                now()->diffInHours(
-                    $bookingStart,
-                    false
-                );
+            $hoursUntilBooking = now()->diffInHours(
+                $bookingStart,
+                false
+            );
 
             if ($hoursUntilBooking < 24) {
                 throw ValidationException::withMessages([
@@ -566,26 +566,145 @@ class BookingService
                 ]);
             }
 
+            /*
+            |--------------------------------------------------------------------------
+            | Store old values for Audit Log
+            |--------------------------------------------------------------------------
+            */
+
+            $oldValues = [
+                'status' => $booking->status,
+                'cancelled_at' => $booking->cancelled_at?->format('Y-m-d H:i:s'),
+                'cancellation_reason' => $booking->cancellation_reason,
+                'paid_amount' => (float) $booking->paid_amount,
+                'payment_status' => $booking->payment_status,
+            ];
+
+            /*
+            |--------------------------------------------------------------------------
+            | Cancel Booking
+            |--------------------------------------------------------------------------
+            */
+
             $booking->update([
                 'status' => 'cancelled',
                 'cancelled_at' => now(),
                 'cancellation_reason' => $reason,
             ]);
 
+            /*
+            |--------------------------------------------------------------------------
+            | Release Active Holds
+            |--------------------------------------------------------------------------
+            */
+
             BookingHold::query()
-                ->where(
-                    'booking_id',
-                    $booking->id
-                )
-                ->where(
-                    'status',
-                    'active'
-                )
+                ->where('booking_id', $booking->id)
+                ->where('status', 'active')
                 ->update([
                     'status' => 'released',
                 ]);
 
-            return $booking->fresh([
+            $booking->refresh();
+            /*
+|--------------------------------------------------------------------------
+| Client Notification
+|--------------------------------------------------------------------------
+*/
+
+            $booking->notifications()->create([
+                'user_id' => null,
+                'client_id' => $booking->client_id,
+                'type' => 'booking_cancelled',
+                'title' => 'Booking Cancelled',
+                'message' => 'Your booking has been cancelled successfully.',
+                'is_read' => false,
+                'read_at' => null,
+            ]);
+
+            /*
+|--------------------------------------------------------------------------
+| Booking Cancelled SMS
+|--------------------------------------------------------------------------
+*/
+
+            $client = $booking->client;
+
+            if ($client && !empty($client->phone)) {
+
+                $smsAlreadySent = $booking->smsLogs()
+                    ->where('type', 'booking_cancelled')
+                    ->where('status', 'sent')
+                    ->exists();
+
+                if (!$smsAlreadySent) {
+                    try {
+                        app(SmsService::class)->sendBookingCancelled(
+                            phone: $client->phone,
+
+                            date: Jalalian::fromCarbon(
+                                $booking->booking_date
+                            )->format('Y/m/d'),
+
+                            time: Carbon::createFromFormat(
+                                'H:i:s',
+                                $booking->start_time
+                            )->format('H:i'),
+
+                            booking: $booking,
+                            client: $client
+                        );
+
+                    } catch (\Throwable $e) {
+
+                        Log::error('Booking cancelled SMS failed', [
+                            'booking_id' => $booking->id,
+                            'client_id' => $client->id,
+                            'error' => $e->getMessage(),
+                        ]);
+                    }
+                }
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Audit Log
+            |--------------------------------------------------------------------------
+            */
+
+            AccountingAuditLog::create([
+                'user_id' => null,
+
+                'action' => 'booking_cancelled',
+
+                'entity_type' => 'booking',
+                'entity_id' => $booking->id,
+
+                'booking_id' => $booking->id,
+                'client_id' => $booking->client_id,
+
+                'description' => $reason
+                    ?: 'Booking cancelled by client.',
+
+                'old_values' => $oldValues,
+
+                'new_values' => [
+                    'status' => $booking->status,
+                    'cancelled_at' => $booking->cancelled_at?->format('Y-m-d H:i:s'),
+                    'cancellation_reason' => $booking->cancellation_reason,
+                    'paid_amount' => (float) $booking->paid_amount,
+                    'payment_status' => $booking->payment_status,
+                    'refund_created' => false,
+                ],
+
+                'ip_address' => request()?->ip(),
+
+                'user_agent' => request()?->userAgent(),
+
+                'created_at' => now(),
+            ]);
+
+            return $booking->load([
                 'bookingServices.service',
                 'bookingServices.staff',
                 'payments',
@@ -605,6 +724,12 @@ class BookingService
             $newDate,
             $newStartTime
         ) {
+            /*
+            |--------------------------------------------------------------------------
+            | Find Booking
+            |--------------------------------------------------------------------------
+            */
+
             $booking = Booking::query()
                 ->where('id', $bookingId)
                 ->where('client_id', $clientId)
@@ -617,31 +742,46 @@ class BookingService
                 ]);
             }
 
+            /*
+            |--------------------------------------------------------------------------
+            | Check Booking Status
+            |--------------------------------------------------------------------------
+            */
+
             if (in_array($booking->status, [
                 'cancelled',
                 'completed',
                 'rejected',
                 'no_show',
-            ])) {
+            ], true)) {
                 throw ValidationException::withMessages([
-                    'booking' =>
-                        'This booking cannot be rescheduled.',
+                    'booking' => 'This booking cannot be rescheduled.',
                 ]);
             }
 
-            $bookingStart =
-                Carbon::createFromFormat(
-                    'Y-m-d H:i:s',
-                    $booking->booking_date->format('Y-m-d')
-                    . ' '
-                    . $booking->start_time
-                );
+            /*
+            |--------------------------------------------------------------------------
+            | Current Booking Date / Time
+            |--------------------------------------------------------------------------
+            */
 
-            $hoursUntilBooking =
-                now()->diffInHours(
-                    $bookingStart,
-                    false
-                );
+            $bookingStart = Carbon::createFromFormat(
+                'Y-m-d H:i:s',
+                $booking->booking_date->format('Y-m-d')
+                . ' '
+                . $booking->start_time
+            );
+
+            /*
+            |--------------------------------------------------------------------------
+            | 24 Hour Rule
+            |--------------------------------------------------------------------------
+            */
+
+            $hoursUntilBooking = now()->diffInHours(
+                $bookingStart,
+                false
+            );
 
             if ($hoursUntilBooking < 24) {
                 throw ValidationException::withMessages([
@@ -650,85 +790,206 @@ class BookingService
                 ]);
             }
 
+            /*
+            |--------------------------------------------------------------------------
+            | Validate New Date
+            |--------------------------------------------------------------------------
+            */
+
             try {
-                $newBookingStart =
-                    Carbon::createFromFormat(
-                        'H:i',
-                        $newStartTime
-                    );
+                $parsedNewDate = Carbon::createFromFormat(
+                    'Y-m-d',
+                    $newDate
+                );
             } catch (\Throwable $e) {
                 throw ValidationException::withMessages([
-                    'booking' =>
-                        "Invalid start time: {$newStartTime}.",
+                    'booking_date' =>
+                        "Invalid booking date: {$newDate}.",
                 ]);
             }
 
-            if (
-                $newBookingStart->format('H:i')
-                !== $newStartTime
-            ) {
+            if ($parsedNewDate->format('Y-m-d') !== $newDate) {
                 throw ValidationException::withMessages([
-                    'booking' =>
+                    'booking_date' =>
+                        "Invalid booking date: {$newDate}.",
+                ]);
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Validate New Start Time
+            |--------------------------------------------------------------------------
+            */
+
+            try {
+                $newTime = Carbon::createFromFormat(
+                    'H:i',
+                    $newStartTime
+                );
+            } catch (\Throwable $e) {
+                throw ValidationException::withMessages([
+                    'start_time' =>
                         "Invalid start time: {$newStartTime}.",
                 ]);
             }
 
-            $bookingServices =
-                $booking->bookingServices()
-                    ->orderBy('start_time')
-                    ->get();
+            if ($newTime->format('H:i') !== $newStartTime) {
+                throw ValidationException::withMessages([
+                    'start_time' =>
+                        "Invalid start time: {$newStartTime}.",
+                ]);
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Prevent Rescheduling To Past
+            |--------------------------------------------------------------------------
+            */
+
+            try {
+                $newBookingDateTime = Carbon::createFromFormat(
+                    'Y-m-d H:i',
+                    $newDate . ' ' . $newStartTime
+                );
+            } catch (\Throwable $e) {
+                throw ValidationException::withMessages([
+                    'booking_date' =>
+                        'Invalid booking date or time.',
+                ]);
+            }
+
+            if ($newBookingDateTime->lte(now())) {
+                throw ValidationException::withMessages([
+                    'booking_date' =>
+                        'The new booking date and time must be in the future.',
+                ]);
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Get Booking Services
+            |--------------------------------------------------------------------------
+            */
+
+            $bookingServices = $booking->bookingServices()
+                ->orderBy('start_time')
+                ->get();
 
             if ($bookingServices->isEmpty()) {
                 throw ValidationException::withMessages([
-                    'booking' =>
-                        'Booking has no services.',
+                    'booking' => 'Booking has no services.',
                 ]);
             }
 
-            $oldBookingStart =
-                Carbon::createFromFormat(
-                    'H:i:s',
-                    $booking->start_time
-                );
+            /*
+            |--------------------------------------------------------------------------
+            | Save Old Values For Audit
+            |--------------------------------------------------------------------------
+            */
 
-            $offsetMinutes =
-                $oldBookingStart->diffInMinutes(
-                    $newBookingStart,
-                    false
-                );
+            $oldValues = [
+                'booking_date' =>
+                    $booking->booking_date->format('Y-m-d'),
 
-            $availabilityService =
-                app(
-                    BookingAvailabilityService::class
-                );
+                'start_time' =>
+                    $booking->start_time,
+
+                'end_time' =>
+                    $booking->end_time,
+
+                'status' =>
+                    $booking->status,
+
+                'payment_status' =>
+                    $booking->payment_status,
+
+                'paid_amount' =>
+                    (float) $booking->paid_amount,
+
+                'services' => $bookingServices
+                    ->map(function ($service) {
+                        return [
+                            'booking_service_id' =>
+                                $service->id,
+
+                            'service_id' =>
+                                $service->service_id,
+
+                            'staff_id' =>
+                                $service->staff_id,
+
+                            'start_time' =>
+                                $service->start_time,
+
+                            'end_time' =>
+                                $service->end_time,
+                        ];
+                    })
+                    ->values()
+                    ->toArray(),
+            ];
+
+            /*
+            |--------------------------------------------------------------------------
+            | Calculate Time Offset
+            |--------------------------------------------------------------------------
+            */
+
+            $oldBookingStart = Carbon::createFromFormat(
+                'H:i:s',
+                $booking->start_time
+            );
+
+            $newBookingStart = Carbon::createFromFormat(
+                'H:i',
+                $newStartTime
+            );
+
+            $offsetMinutes = $oldBookingStart->diffInMinutes(
+                $newBookingStart,
+                false
+            );
+
+            /*
+            |--------------------------------------------------------------------------
+            | Availability Service
+            |--------------------------------------------------------------------------
+            */
+
+            $availabilityService = app(
+                BookingAvailabilityService::class
+            );
 
             $newBookingServices = [];
 
+            /*
+            |--------------------------------------------------------------------------
+            | Check Every Service
+            |--------------------------------------------------------------------------
+            */
+
             foreach ($bookingServices as $bookingService) {
-                $serviceStart =
-                    Carbon::createFromFormat(
-                        'H:i:s',
-                        $bookingService->start_time
-                    );
 
-                $serviceEnd =
-                    Carbon::createFromFormat(
-                        'H:i:s',
-                        $bookingService->end_time
-                    );
+                $serviceStart = Carbon::createFromFormat(
+                    'H:i:s',
+                    $bookingService->start_time
+                );
 
-                $newServiceStart =
-                    $serviceStart
-                        ->copy()
-                        ->addMinutes($offsetMinutes);
+                $serviceEnd = Carbon::createFromFormat(
+                    'H:i:s',
+                    $bookingService->end_time
+                );
 
-                $newServiceEnd =
-                    $serviceEnd
-                        ->copy()
-                        ->addMinutes($offsetMinutes);
+                $newServiceStart = $serviceStart
+                    ->copy()
+                    ->addMinutes($offsetMinutes);
 
-                $isAvailable =
-                    $availabilityService->isTimeAvailable(
+                $newServiceEnd = $serviceEnd
+                    ->copy()
+                    ->addMinutes($offsetMinutes);
+
+                $isAvailable = $availabilityService
+                    ->isTimeAvailable(
                         $bookingService->staff_id,
                         $newDate,
                         $newServiceStart->format('H:i:s'),
@@ -744,29 +1005,59 @@ class BookingService
                 }
 
                 $newBookingServices[] = [
-                    'id' => $bookingService->id,
+                    'id' =>
+                        $bookingService->id,
+
+                    'service_id' =>
+                        $bookingService->service_id,
+
+                    'staff_id' =>
+                        $bookingService->staff_id,
+
                     'start_time' =>
                         $newServiceStart->format('H:i:s'),
+
                     'end_time' =>
                         $newServiceEnd->format('H:i:s'),
                 ];
             }
 
-            $newBookingEnd =
-                Carbon::createFromFormat(
-                    'H:i:s',
-                    $booking->end_time
-                )->addMinutes($offsetMinutes);
+            /*
+            |--------------------------------------------------------------------------
+            | Calculate New Booking End
+            |--------------------------------------------------------------------------
+            */
+
+            $newBookingEnd = Carbon::createFromFormat(
+                'H:i:s',
+                $booking->end_time
+            )->addMinutes($offsetMinutes);
+
+            /*
+            |--------------------------------------------------------------------------
+            | Update Booking
+            |--------------------------------------------------------------------------
+            */
 
             $booking->update([
-                'booking_date' => $newDate,
+                'booking_date' =>
+                    $newDate,
+
                 'start_time' =>
                     $newBookingStart->format('H:i:s'),
+
                 'end_time' =>
                     $newBookingEnd->format('H:i:s'),
             ]);
 
+            /*
+            |--------------------------------------------------------------------------
+            | Update Booking Services
+            |--------------------------------------------------------------------------
+            */
+
             foreach ($newBookingServices as $item) {
+
                 BookingServiceModel::query()
                     ->where(
                         'id',
@@ -779,10 +1070,17 @@ class BookingService
                     ->update([
                         'start_time' =>
                             $item['start_time'],
+
                         'end_time' =>
                             $item['end_time'],
                     ]);
             }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Release Old Active Holds
+            |--------------------------------------------------------------------------
+            */
 
             BookingHold::query()
                 ->where(
@@ -796,6 +1094,144 @@ class BookingService
                 ->update([
                     'status' => 'released',
                 ]);
+
+            /*
+            |--------------------------------------------------------------------------
+            | Refresh Booking
+            |--------------------------------------------------------------------------
+            */
+
+            $booking->refresh();
+
+            /*
+            |--------------------------------------------------------------------------
+            | Client Notification
+            |--------------------------------------------------------------------------
+            */
+
+            $booking->notifications()->create([
+                'user_id' => null,
+                'client_id' => $booking->client_id,
+                'type' => 'booking_rescheduled',
+                'title' => 'Booking Rescheduled',
+                'message' =>
+                    'Your booking has been rescheduled to '
+                    . $booking->booking_date->format('Y-m-d')
+                    . ' at '
+                    . Carbon::createFromFormat(
+                        'H:i:s',
+                        $booking->start_time
+                    )->format('H:i')
+                    . '.',
+                'is_read' => false,
+                'read_at' => null,
+            ]);
+            /*
+|--------------------------------------------------------------------------
+| Booking Rescheduled SMS
+|--------------------------------------------------------------------------
+*/
+
+            $client = $booking->client;
+
+            if ($client && !empty($client->phone)) {
+
+                try {
+                    app(SmsService::class)->sendBookingRescheduled(
+                        phone: $client->phone,
+
+                        date: Jalalian::fromCarbon(
+                            $booking->booking_date
+                        )->format('Y/m/d'),
+
+                        time: Carbon::createFromFormat(
+                            'H:i:s',
+                            $booking->start_time
+                        )->format('H:i'),
+
+                        booking: $booking,
+                        client: $client
+                    );
+
+                } catch (\Throwable $e) {
+
+                    Log::error('Booking rescheduled SMS failed', [
+                        'booking_id' => $booking->id,
+                        'client_id' => $client->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Accounting Audit Log
+            |--------------------------------------------------------------------------
+            */
+
+            AccountingAuditLog::create([
+                'user_id' =>
+                    null,
+
+                'action' =>
+                    'booking_rescheduled',
+
+                'entity_type' =>
+                    'booking',
+
+                'entity_id' =>
+                    $booking->id,
+
+                'booking_id' =>
+                    $booking->id,
+
+                'client_id' =>
+                    $booking->client_id,
+
+                'description' =>
+                    'Booking rescheduled by client.',
+
+                'old_values' =>
+                    $oldValues,
+
+                'new_values' => [
+                    'booking_date' =>
+                        $booking->booking_date->format('Y-m-d'),
+
+                    'start_time' =>
+                        $booking->start_time,
+
+                    'end_time' =>
+                        $booking->end_time,
+
+                    'status' =>
+                        $booking->status,
+
+                    'payment_status' =>
+                        $booking->payment_status,
+
+                    'paid_amount' =>
+                        (float) $booking->paid_amount,
+
+                    'services' =>
+                        $newBookingServices,
+                ],
+
+                'ip_address' =>
+                    request()?->ip(),
+
+                'user_agent' =>
+                    request()?->userAgent(),
+
+                'created_at' =>
+                    now(),
+            ]);
+
+            /*
+            |--------------------------------------------------------------------------
+            | Return Booking
+            |--------------------------------------------------------------------------
+            */
 
             return $booking->fresh([
                 'bookingServices.service',

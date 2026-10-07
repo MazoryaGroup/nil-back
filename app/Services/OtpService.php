@@ -4,12 +4,17 @@ namespace App\Services;
 
 use App\Models\OtpCode;
 use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Facades\Log;
+use Throwable;
 
 class OtpService
 {
+    public function __construct(
+        private SmsService $smsService
+    ) {
+    }
+
     /**
-     * Generate and store OTP
+     * Generate, store and send OTP.
      */
     public function generate(
         string $phone,
@@ -27,7 +32,7 @@ class OtpService
         $code = (string) random_int(100000, 999999);
 
         // Store hashed OTP
-        OtpCode::create([
+        $otp = OtpCode::create([
             'phone' => $phone,
             'code' => Hash::make($code),
             'type' => $type,
@@ -35,22 +40,27 @@ class OtpService
             'attempts' => 0,
         ]);
 
-        /*
-         * Temporary log for development.
-         *
-         * بعد از اتصال SMS این قسمت حذف می‌شود.
-         */
-        Log::info('OTP generated', [
-            'phone' => $phone,
-            'type' => $type,
-            'code' => $code,
-        ]);
+        try {
+
+            // Send real OTP via SMS.ir
+            $this->smsService->sendOtp(
+                phone: $phone,
+                code: $code
+            );
+
+        } catch (Throwable $e) {
+
+            // If SMS sending fails, remove unusable OTP
+            $otp->delete();
+
+            throw $e;
+        }
 
         return $code;
     }
 
     /**
-     * Verify OTP
+     * Verify OTP.
      */
     public function verify(
         string $phone,

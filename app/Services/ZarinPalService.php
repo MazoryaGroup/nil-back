@@ -106,7 +106,9 @@ class ZarinPalService
             );
         }
 
-        if (empty(trim($authority))) {
+        $authority = trim($authority);
+
+        if (empty($authority)) {
             throw new RuntimeException(
                 'ZarinPal authority is required.'
             );
@@ -119,39 +121,43 @@ class ZarinPalService
         $request = new VerifyRequest();
 
         $request->amount = (int) $amount;
-        $request->authority = trim($authority);
+        $request->authority = $authority;
 
         $response = $zarinpal
             ->paymentGateway()
             ->verify($request);
 
         /*
-         * ZarinPal verification codes:
-         *
-         * 100 = Payment verified successfully.
-         * 101 = Payment was already verified.
-         *
-         * Any other code means the payment must not be marked as paid.
-         */
+        |--------------------------------------------------------------------------
+        | Verification Result
+        |--------------------------------------------------------------------------
+        |
+        | 100 = payment successfully verified
+        | 101 = payment already verified
+        |
+        */
+
         if (!in_array((int) $response->code, [100, 101], true)) {
             throw new RuntimeException(
                 'ZarinPal payment verification failed. Code: '
                 . $response->code
                 . ' - '
-                . $response->message
+                . ($response->message ?? 'Unknown error')
             );
         }
 
         return [
-            'authority' => $response->authority,
-            'code' => $response->code,
-            'message' => $response->message,
-            'ref_id' => $response->ref_id,
-            'card_pan' => $response->card_pan,
-            'card_hash' => $response->card_hash,
-            'fee_type' => $response->fee_type,
-            'fee' => $response->fee,
+            // Authority comes from our request.
+            // VerifyResponse does not initialize this property.
+            'authority' => $authority,
+
+            'code' => (int) $response->code,
+            'message' => $response->message ?? null,
+            'ref_id' => $response->ref_id ?? null,
+            'card_pan' => $response->card_pan ?? null,
+            'card_hash' => $response->card_hash ?? null,
+            'fee_type' => $response->fee_type ?? null,
+            'fee' => $response->fee ?? null,
         ];
     }
-
 }

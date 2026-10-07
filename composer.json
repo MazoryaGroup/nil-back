@@ -9,6 +9,7 @@
         "ariaieboy/filament-jalali-datetimepicker": "^2.1",
         "barryvdh/laravel-dompdf": "^3.1",
         "bezhansalleh/filament-google-analytics": "^2.1",
+        "cryptommer/smsir": "^1.2",
         "filament/filament": "^3.2",
         "guzzlehttp/guzzle": "^7.8",
         "ipe/smsir-php": "^1.0",

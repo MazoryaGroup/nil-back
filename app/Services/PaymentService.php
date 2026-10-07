@@ -7,6 +7,8 @@ use App\Models\Payment;
 use App\Models\AccountingTransaction;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
+use Carbon\Carbon;
+use Illuminate\Support\Facades\Log;
 
 class PaymentService
 {
@@ -520,6 +522,15 @@ class PaymentService
             */
 
             $payment->refresh();
+            /*
+|--------------------------------------------------------------------------
+| Payment Success Notification
+|--------------------------------------------------------------------------
+*/
+
+            $this->createPaymentSuccessNotification(
+                $payment
+            );
 
             /*
             |--------------------------------------------------------------------------
@@ -840,6 +851,15 @@ class PaymentService
 
             $payment->refresh();
 
+            /*
+|--------------------------------------------------------------------------
+| Payment Success Notification
+|--------------------------------------------------------------------------
+*/
+
+            $this->createPaymentSuccessNotification(
+                $payment
+            );
             /*
             |--------------------------------------------------------------------------
             | Create Audit Log
@@ -1260,6 +1280,15 @@ class PaymentService
             */
 
             $payment->refresh();
+            /*
+|--------------------------------------------------------------------------
+| Payment Success Notification
+|--------------------------------------------------------------------------
+*/
+
+            $this->createPaymentSuccessNotification(
+                $payment
+            );
 
             /*
             |--------------------------------------------------------------------------
@@ -1604,7 +1633,15 @@ class PaymentService
             */
 
             $payment->refresh();
+            /*
+            |--------------------------------------------------------------------------
+            | Payment Success Notification
+            |--------------------------------------------------------------------------
+            */
 
+            $this->createPaymentSuccessNotification(
+                $payment
+            );
             /*
             |--------------------------------------------------------------------------
             | Create Audit Log
@@ -1668,11 +1705,12 @@ class PaymentService
         Payment $payment,
         string $authority
     ): Payment {
-        if ($payment->type !== 'deposit') {
+        if (!in_array($payment->type, ['deposit', 'remaining'], true)) {
             throw new RuntimeException(
-                'This payment is not a deposit payment.'
+                'Only deposit or remaining payments can receive an authority.'
             );
         }
+
 
         if ($payment->status !== 'pending') {
             throw new RuntimeException(
@@ -1731,6 +1769,14 @@ class PaymentService
     public function recalculateBookingFinancialStatus(
         Booking $booking
     ): Booking {
+
+        /*
+        |--------------------------------------------------------------------------
+        | Store Old Booking Status
+        |--------------------------------------------------------------------------
+        */
+
+        $oldBookingStatus = $booking->status;
 
         /*
         |--------------------------------------------------------------------------
@@ -1796,16 +1842,35 @@ class PaymentService
         |--------------------------------------------------------------------------
         | Automatically Confirm Fully Paid Booking
         |--------------------------------------------------------------------------
+        */
+
+        /*
+|--------------------------------------------------------------------------
+| Check Paid Deposit
+|--------------------------------------------------------------------------
+*/
+
+        $paidDepositAmount = Payment::query()
+            ->where('booking_id', $booking->id)
+            ->where('type', 'deposit')
+            ->where('status', 'paid')
+            ->sum('amount');
+
+        $requiredDepositAmount = (float) $booking->deposit_amount;
+
+        /*
+        |--------------------------------------------------------------------------
+        | Confirm Booking After Deposit Payment
+        |--------------------------------------------------------------------------
         |
-        | فقط رزروی که منتظر پرداخت است بعد از پرداخت کامل
-        | به confirmed تبدیل می‌شود.
-        |
-        | cancelled و completed دست‌نخورده باقی می‌مانند.
+        | رزرو زمانی قطعی می‌شود که مبلغ بیعانه مورد نیاز پرداخت شده باشد.
+        | برای Confirm شدن نیازی به تسویه کامل رزرو نیست.
         |
         */
 
         if (
-            $remainingAmount <= 0 &&
+            $requiredDepositAmount > 0 &&
+            (float) $paidDepositAmount >= $requiredDepositAmount &&
             $booking->status === 'awaiting_payment'
         ) {
             $updateData['status'] = 'confirmed';
@@ -1819,9 +1884,207 @@ class PaymentService
 
         $booking->update($updateData);
 
-        return $booking->fresh();
-    }
+        $booking->refresh();
 
+        /*
+        |--------------------------------------------------------------------------
+        | Booking Confirmation Notification
+        |--------------------------------------------------------------------------
+        |
+        | فقط زمانی Notification ساخته می‌شود که وضعیت واقعاً
+        | از awaiting_payment به confirmed تغییر کرده باشد.
+        |
+        */
+
+        if (
+            $oldBookingStatus === 'awaiting_payment' &&
+            $booking->status === 'confirmed'
+        ) {
+            /*
+            |--------------------------------------------------------------------------
+            | Internal Notification
+            |--------------------------------------------------------------------------
+            */
+
+            $alreadyExists = $booking->notifications()
+                ->where('type', 'booking_confirmed')
+                ->exists();
+
+            if (!$alreadyExists) {
+                $booking->notifications()->create([
+                    'user_id' => null,
+                    'client_id' => $booking->client_id,
+                    'type' => 'booking_confirmed',
+                    'title' => 'Booking Confirmed',
+                    'message' =>
+                        'Your booking has been confirmed for '
+                        . $booking->booking_date->format('Y-m-d')
+                        . ' at '
+                        . Carbon::createFromFormat(
+                            'H:i:s',
+                            $booking->start_time
+                        )->format('H:i')
+                        . '.',
+                    'is_read' => false,
+                    'read_at' => null,
+                ]);
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Booking Confirmation SMS
+            |--------------------------------------------------------------------------
+            */
+
+            $client = $booking->client;
+
+            if ($client && !empty($client->phone)) {
+
+                $smsAlreadySent = $booking->smsLogs()
+                    ->where('type', 'booking_confirmed')
+                    ->where('status', 'sent')
+                    ->exists();
+
+                if (!$smsAlreadySent) {
+                    try {
+                        app(SmsService::class)->sendBookingConfirmed(
+                            phone: $client->phone,
+                            date: \Morilog\Jalali\Jalalian::fromCarbon(
+                                $booking->booking_date
+                            )->format('Y/m/d'),
+                            time: Carbon::createFromFormat(
+                                'H:i:s',
+                                $booking->start_time
+                            )->format('H:i'),
+                            booking: $booking,
+                            client: $client
+                        );
+                    } catch (\Throwable $e) {
+                        Log::error('Booking confirmation SMS failed', [
+                            'booking_id' => $booking->id,
+                            'client_id' => $client->id,
+                            'error' => $e->getMessage(),
+                        ]);
+                    }
+                }
+            }
+        }
+
+        return $booking;
+    }
+    /*
+    |--------------------------------------------------------------------------
+    | Create Payment Success Notification
+    |--------------------------------------------------------------------------
+    */
+
+    private function createPaymentSuccessNotification(
+        Payment $payment
+    ): void {
+
+        /*
+        |--------------------------------------------------------------------------
+        | Internal Notification
+        |--------------------------------------------------------------------------
+        */
+
+        $alreadyExists = $payment->booking
+            ->notifications()
+            ->where('type', 'payment_successful')
+            ->where('message', 'like', '%Payment #' . $payment->id . '%')
+            ->exists();
+
+        if (!$alreadyExists) {
+
+            $paymentType = $payment->type === 'deposit'
+                ? 'Deposit'
+                : 'Remaining payment';
+
+            $payment->booking
+                ->notifications()
+                ->create([
+                    'user_id' => null,
+                    'client_id' => $payment->client_id,
+                    'type' => 'payment_successful',
+                    'title' => 'Payment Successful',
+                    'message' =>
+                        $paymentType
+                        . ' of '
+                        . number_format((float) $payment->amount)
+                        . ' was paid successfully. Payment #'
+                        . $payment->id
+                        . '.',
+                    'is_read' => false,
+                    'read_at' => null,
+                ]);
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Payment Success SMS
+        |--------------------------------------------------------------------------
+        */
+
+        $client = $payment->client;
+
+        if (!$client || empty($client->phone)) {
+            return;
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Prevent Duplicate SMS
+        |--------------------------------------------------------------------------
+        */
+
+        $smsAlreadySent = $payment->booking
+            ->smsLogs()
+            ->where('type', 'payment_success')
+            ->where('status', 'sent')
+            ->where('message', 'Payment successful #' . $payment->id)
+            ->exists();
+
+        if ($smsAlreadySent) {
+            return;
+        }
+
+        try {
+
+            app(SmsService::class)->sendTemplate(
+                phone: $client->phone,
+
+                templateId: (int) config(
+                    'services.smsir.templates.payment_success'
+                ),
+
+                parameters: [
+                    'AMOUNT' => number_format(
+                        (float) $payment->amount,
+                        0,
+                        '.',
+                        ''
+                    ),
+                ],
+
+                type: 'payment_success',
+
+                booking: $payment->booking,
+
+                client: $client,
+
+                message: 'Payment successful #' . $payment->id
+            );
+
+        } catch (\Throwable $e) {
+
+            Log::error('Payment success SMS failed', [
+                'payment_id' => $payment->id,
+                'booking_id' => $payment->booking_id,
+                'client_id' => $payment->client_id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
     /*
     |--------------------------------------------------------------------------
     | Sync Cash Register

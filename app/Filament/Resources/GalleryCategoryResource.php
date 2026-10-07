@@ -26,14 +26,25 @@ class GalleryCategoryResource extends Resource
     {
         return $form
             ->schema([
+
                 Forms\Components\TextInput::make('name')
                     ->label('نام دسته‌بندی')
                     ->required()
                     ->maxLength(255),
 
+                Forms\Components\FileUpload::make('image')
+                    ->label('تصویر دسته‌بندی')
+                    ->image()
+                    ->disk('api_public')
+                    ->directory('gallery/categories')
+                    ->visibility('public')
+                    ->imagePreviewHeight('200')
+                    ->maxSize(5120),
+
                 Forms\Components\Toggle::make('is_active')
                     ->label('فعال')
                     ->default(true),
+
             ]);
     }
 
@@ -41,9 +52,16 @@ class GalleryCategoryResource extends Resource
     {
         return $table
             ->columns([
+
                 Tables\Columns\TextColumn::make('id')
                     ->label('شناسه')
                     ->sortable(),
+
+                Tables\Columns\ImageColumn::make('image')
+                    ->label('تصویر')
+                    ->disk('api_public')
+                    ->square()
+                    ->size(60),
 
                 Tables\Columns\TextColumn::make('name')
                     ->label('نام')
@@ -58,6 +76,7 @@ class GalleryCategoryResource extends Resource
                     ->label('تاریخ ایجاد')
                     ->dateTime('Y-m-d H:i')
                     ->sortable(),
+
             ])
             ->actions([
                 Tables\Actions\EditAction::make(),

@@ -7,6 +7,7 @@ use App\Models\GalleryCategory;
 use App\Models\GalleryItem;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
 
 class GalleryController extends Controller
 {
@@ -22,7 +23,18 @@ class GalleryController extends Controller
                 ->get([
                     'id',
                     'name',
-                ]);
+                    'image',
+                ])
+                ->map(function ($category) {
+                    return [
+                        'id' => $category->id,
+                        'name' => $category->name,
+
+                        'image' => $category->image
+                            ? Storage::disk('api_public')->url($category->image)
+                            : null,
+                    ];
+                });
 
             return response()->json([
                 'success' => true,
@@ -50,7 +62,7 @@ class GalleryController extends Controller
             $query = GalleryItem::query()
                 ->where('is_active', true)
                 ->with([
-                    'category:id,name',
+                    'category:id,name,image',
                 ]);
 
             if ($request->filled('category_id')) {
@@ -67,7 +79,29 @@ class GalleryController extends Controller
                     'category_id',
                     'title',
                     'image',
-                ]);
+                ])
+                ->map(function ($item) {
+                    return [
+                        'id' => $item->id,
+                        'category_id' => $item->category_id,
+                        'title' => $item->title,
+
+                        'image' => $item->image
+                            ? Storage::disk('api_public')->url($item->image)
+                            : null,
+
+                        'category' => $item->category
+                            ? [
+                                'id' => $item->category->id,
+                                'name' => $item->category->name,
+
+                                'image' => $item->category->image
+                                    ? Storage::disk('api_public')->url($item->category->image)
+                                    : null,
+                            ]
+                            : null,
+                    ];
+                });
 
             return response()->json([
                 'success' => true,
@@ -95,7 +129,7 @@ class GalleryController extends Controller
             $item = GalleryItem::query()
                 ->where('is_active', true)
                 ->with([
-                    'category:id,name',
+                    'category:id,name,image',
                 ])
                 ->find($id);
 
@@ -107,11 +141,32 @@ class GalleryController extends Controller
                 ], 404);
             }
 
+            $data = [
+                'id' => $item->id,
+                'category_id' => $item->category_id,
+                'title' => $item->title,
+
+                'image' => $item->image
+                    ? Storage::disk('api_public')->url($item->image)
+                    : null,
+
+                'category' => $item->category
+                    ? [
+                        'id' => $item->category->id,
+                        'name' => $item->category->name,
+
+                        'image' => $item->category->image
+                            ? Storage::disk('api_public')->url($item->category->image)
+                            : null,
+                    ]
+                    : null,
+            ];
+
             return response()->json([
                 'success' => true,
                 'statusCode' => 200,
                 'message' => 'Gallery item retrieved successfully.',
-                'data' => $item,
+                'data' => $data,
             ], 200);
 
         } catch (\Throwable $e) {

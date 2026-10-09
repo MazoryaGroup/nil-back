@@ -46,6 +46,8 @@ return [
             'reminder_24h' => env('SMSIR_REMINDER_24H_TEMPLATE_ID'),
             'reminder_2h' => env('SMSIR_REMINDER_2H_TEMPLATE_ID'),
             'payment_success' => env('SMSIR_PAYMENT_SUCCESS_TEMPLATE_ID'),
+            'payment_link' => env('SMSIR_TEMPLATE_PAYMENT_LINK'),
+            'welcome' => (int) env('SMSIR_WELCOME_TEMPLATE_ID'),
         ],
     ],
     'zarinpal' => [

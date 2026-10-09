@@ -52,9 +52,16 @@ class OfflineSyncService
             ->first();
 
         if ($existing) {
+            $this->validateDuplicateRequest(
+                $existing,
+                $clientId,
+                $userId,
+                $action,
+                $payload
+            );
+
             return $existing;
         }
-
         /*
         |--------------------------------------------------------------------------
         | Create Sync Request
@@ -100,6 +107,14 @@ class OfflineSyncService
                 ->first();
 
             if ($existing) {
+                $this->validateDuplicateRequest(
+                    $existing,
+                    $clientId,
+                    $userId,
+                    $action,
+                    $payload
+                );
+
                 return $existing;
             }
 
@@ -342,7 +357,21 @@ class OfflineSyncService
                 'POS reference number is required.'
             );
         }
+        /*
+        |--------------------------------------------------------------------------
+        | Validate POS Terminal ID
+        |--------------------------------------------------------------------------
+        */
 
+        $posTerminalId = (int) (
+            $payload['pos_terminal_id'] ?? 0
+        );
+
+        if ($posTerminalId <= 0) {
+            throw new RuntimeException(
+                'POS terminal ID is required.'
+            );
+        }
         /*
         |--------------------------------------------------------------------------
         | Find Payment
@@ -381,17 +410,13 @@ class OfflineSyncService
         |--------------------------------------------------------------------------
         */
 
-        $payment = app(PaymentService::class)
-            ->markAsPaidByPos(
+        $payment = app(\App\Services\PosPaymentService::class)
+            ->markAsPaidManually(
                 payment: $payment,
-
-                referenceNumber:
-                $referenceNumber,
-
+                terminalId: $posTerminalId,
+                referenceNumber: $referenceNumber,
                 createdBy: $createdBy,
-
-                offlineId:
-                $syncRequest->offline_id
+                offlineId: $syncRequest->offline_id
             );
 
         /*
@@ -1110,5 +1135,74 @@ class OfflineSyncService
                 $refund->paid_at
                     ?->toDateTimeString(),
         ];
+    }
+    private function validateDuplicateRequest(
+        OfflineSyncRequest $existing,
+        ?int $clientId,
+        ?int $userId,
+        string $action,
+        array $payload
+    ): void {
+        $storedPayload = $existing->payload;
+
+        if (is_string($storedPayload)) {
+            $storedPayload = json_decode(
+                $storedPayload,
+                true,
+                512,
+                JSON_THROW_ON_ERROR
+            );
+        }
+
+        $normalize = function (array $data) use (&$normalize): array {
+            foreach ($data as &$value) {
+                if (is_array($value)) {
+                    $value = $normalize($value);
+                }
+            }
+            unset($value);
+
+            if (!array_is_list($data)) {
+                ksort($data);
+            }
+
+            return $data;
+        };
+
+        if (
+            $existing->client_id !== $clientId ||
+            $existing->user_id !== $userId ||
+            $existing->action !== $action ||
+            !is_array($storedPayload) ||
+            $normalize($storedPayload) !== $normalize($payload)
+        ) {
+            throw new RuntimeException(
+                'Offline ID conflict: request data does not match the original request.'
+            );
+        }
+    }
+    private function authorizeFinancialAction(
+        \App\Models\User $operator,
+        string $action
+    ): void {
+        $staffAllowedActions = [
+            'payment_pos',
+            'payment_cash',
+        ];
+
+        if ($operator->isAdmin()) {
+            return;
+        }
+
+        if (
+            $operator->role === 'staff' &&
+            in_array($action, $staffAllowedActions, true)
+        ) {
+            return;
+        }
+
+        throw new \Illuminate\Auth\Access\AuthorizationException(
+            'You do not have permission to perform this financial operation.'
+        );
     }
 }

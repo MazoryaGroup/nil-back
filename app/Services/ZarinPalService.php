@@ -3,14 +3,48 @@
 namespace App\Services;
 
 use RuntimeException;
-use ZarinPal\Sdk\Endpoint\PaymentGateway\RequestTypes\RequestRequest;
+use ZarinPal\Sdk\Options;
 use ZarinPal\Sdk\ZarinPal;
+use ZarinPal\Sdk\Endpoint\PaymentGateway\RequestTypes\RequestRequest;
 use ZarinPal\Sdk\Endpoint\PaymentGateway\RequestTypes\VerifyRequest;
 
 class ZarinPalService
 {
     /**
-     * Create a payment request with ZarinPal.
+     * Build SDK with Laravel configuration.
+     */
+    private function gateway(): ZarinPal
+    {
+        $merchantId = trim(
+            (string) config('services.zarinpal.merchant_id', '')
+        );
+
+        if (
+            $merchantId === ''
+            || $merchantId === 'YOUR_MERCHANT_ID'
+            || $merchantId === 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'
+        ) {
+            throw new RuntimeException(
+                'ZarinPal merchant ID is not configured.'
+            );
+        }
+
+        $options = new Options([
+            'merchant_id' => $merchantId,
+            'sandbox' => filter_var(
+                config('services.zarinpal.sandbox', false),
+                FILTER_VALIDATE_BOOLEAN
+            ),
+        ]);
+
+        return new ZarinPal($options);
+    }
+
+    /**
+     * Create payment request.
+     *
+     * Amount must use the unit expected by
+     * the configured ZarinPal merchant.
      */
     public function requestPayment(
         int|float $amount,
@@ -19,13 +53,6 @@ class ZarinPalService
         ?string $email = null,
         ?string $mobile = null
     ): array {
-        $merchantId = config('services.zarinpal.merchant_id');
-
-        if (empty($merchantId) || $merchantId === 'YOUR_MERCHANT_ID') {
-            throw new RuntimeException(
-                'ZarinPal merchant ID is not configured.'
-            );
-        }
 
         if ($amount <= 0) {
             throw new RuntimeException(
@@ -33,25 +60,23 @@ class ZarinPalService
             );
         }
 
-        if (empty(trim($callbackUrl))) {
+        if (trim($callbackUrl) === '') {
             throw new RuntimeException(
                 'ZarinPal callback URL is required.'
             );
         }
 
-        if (empty(trim($description))) {
+        if (trim($description) === '') {
             throw new RuntimeException(
                 'Payment description is required.'
             );
         }
 
-        $options = new \ZarinPal\Sdk\Options();
-
-        $zarinpal = new ZarinPal($options);
+        $zarinpal = $this->gateway();
 
         $request = new RequestRequest();
 
-        $request->amount = (int) $amount;
+        $request->amount = (int) round($amount);
         $request->description = $description;
         $request->callback_url = $callbackUrl;
         $request->mobile = $mobile;
@@ -61,44 +86,50 @@ class ZarinPalService
             ->paymentGateway()
             ->request($request);
 
+        $authority = trim(
+            (string) ($response->authority ?? '')
+        );
+
+        if ($authority === '') {
+            throw new RuntimeException(
+                'ZarinPal did not return a valid authority.'
+            );
+        }
+
         return [
-            'authority' => $response->authority,
+            'authority' => $authority,
             'payment_url' => $zarinpal
                 ->paymentGateway()
-                ->getRedirectUrl($response->authority),
+                ->getRedirectUrl($authority),
         ];
     }
 
     /**
-     * Build ZarinPal payment redirect URL.
+     * Recover an existing payment URL
+     * without requesting a new Authority.
      */
     public function getPaymentUrl(string $authority): string
     {
-        if (empty(trim($authority))) {
+        $authority = trim($authority);
+
+        if ($authority === '') {
             throw new RuntimeException(
                 'ZarinPal authority is required.'
             );
         }
 
-        $sandbox = (bool) config('services.zarinpal.sandbox', true);
-
-        $baseUrl = $sandbox
-            ? 'https://sandbox.zarinpal.com/pg/StartPay/'
-            : 'https://www.zarinpal.com/pg/StartPay/';
-
-        return $baseUrl . trim($authority);
+        return $this->gateway()
+            ->paymentGateway()
+            ->getRedirectUrl($authority);
     }
+
+    /**
+     * Verify payment with the same SDK configuration.
+     */
     public function verifyPayment(
         int|float $amount,
         string $authority
     ): array {
-        $merchantId = config('services.zarinpal.merchant_id');
-
-        if (empty($merchantId) || $merchantId === 'YOUR_MERCHANT_ID') {
-            throw new RuntimeException(
-                'ZarinPal merchant ID is not configured.'
-            );
-        }
 
         if ($amount <= 0) {
             throw new RuntimeException(
@@ -108,50 +139,37 @@ class ZarinPalService
 
         $authority = trim($authority);
 
-        if (empty($authority)) {
+        if ($authority === '') {
             throw new RuntimeException(
                 'ZarinPal authority is required.'
             );
         }
 
-        $options = new \ZarinPal\Sdk\Options();
-
-        $zarinpal = new ZarinPal($options);
+        $zarinpal = $this->gateway();
 
         $request = new VerifyRequest();
 
-        $request->amount = (int) $amount;
+        $request->amount = (int) round($amount);
         $request->authority = $authority;
 
         $response = $zarinpal
             ->paymentGateway()
             ->verify($request);
 
-        /*
-        |--------------------------------------------------------------------------
-        | Verification Result
-        |--------------------------------------------------------------------------
-        |
-        | 100 = payment successfully verified
-        | 101 = payment already verified
-        |
-        */
+        $code = (int) ($response->code ?? 0);
 
-        if (!in_array((int) $response->code, [100, 101], true)) {
+        if (!in_array($code, [100, 101], true)) {
             throw new RuntimeException(
                 'ZarinPal payment verification failed. Code: '
-                . $response->code
+                . $code
                 . ' - '
                 . ($response->message ?? 'Unknown error')
             );
         }
 
         return [
-            // Authority comes from our request.
-            // VerifyResponse does not initialize this property.
             'authority' => $authority,
-
-            'code' => (int) $response->code,
+            'code' => $code,
             'message' => $response->message ?? null,
             'ref_id' => $response->ref_id ?? null,
             'card_pan' => $response->card_pan ?? null,

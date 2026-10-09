@@ -56,11 +56,7 @@ class User extends Authenticatable implements FilamentUser, JWTSubject
     |--------------------------------------------------------------------------
     */
 
-    public function canAccessPanel(
-        Panel $panel
-    ): bool {
-        return true;
-    }
+
 
     /*
     |--------------------------------------------------------------------------
@@ -79,11 +75,13 @@ class User extends Authenticatable implements FilamentUser, JWTSubject
     |--------------------------------------------------------------------------
     */
 
+    public function canAccessPanel(Panel $panel): bool
+    {
+        return $this->role === 'admin';
+    }
+
     public function isAdmin(): bool
     {
-        return true;
-
-        // بعداً:
-        // return $this->role === 'admin';
+        return $this->role === 'admin';
     }
 }

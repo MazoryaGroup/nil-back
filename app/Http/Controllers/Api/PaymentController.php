@@ -11,6 +11,8 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use RuntimeException;
 use Throwable;
+use Illuminate\Support\Facades\Log;
+
 
 class PaymentController extends Controller
 {
@@ -132,48 +134,67 @@ class PaymentController extends Controller
                 ], 404);
             }
 
-            $payment = $this->paymentService
-                ->createDepositPayment(
+            /*
+            |--------------------------------------------------------------------------
+            | Reserve Deposit Initiation
+            |--------------------------------------------------------------------------
+            */
+
+            $reservation = $this->paymentService
+                ->reserveDepositPaymentInitiation(
                     $booking,
                     $client
                 );
 
+            $payment = $reservation['payment'];
+            $token = $reservation['token'];
+
             /*
-             * If deposit is already paid,
-             * do not create another gateway request.
-             */
-            if ($payment->status === 'paid') {
-                throw new RuntimeException(
-                    'Booking deposit has already been paid.'
-                );
-            }
+            |--------------------------------------------------------------------------
+            | Request ZarinPal
+            |--------------------------------------------------------------------------
+            */
 
             $paymentData = app(ZarinPalService::class)
                 ->requestPayment(
                     amount: (float) $payment->amount,
-
-                    callbackUrl:
-                    config('services.zarinpal.callback_url'),
-
-                    description:
-                    'NIL booking deposit #' . $booking->id,
-
+                    callbackUrl: config('services.zarinpal.callback_url'),
+                    description: 'NIL booking deposit #' . $booking->id,
                     email: $client->email,
-
-                    mobile: $client->phone,
+                    mobile: $client->phone
                 );
 
+            $authority = trim(
+                (string) ($paymentData['authority'] ?? '')
+            );
+
+            $paymentUrl = trim(
+                (string) ($paymentData['payment_url'] ?? '')
+            );
+
+            if ($authority === '' || $paymentUrl === '') {
+                throw new RuntimeException(
+                    'ZarinPal did not return valid payment information.'
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Persist Authority
+            |--------------------------------------------------------------------------
+            */
+
             $payment = $this->paymentService
-                ->setAuthority(
-                    $payment,
-                    $paymentData['authority']
+                ->completeDepositPaymentInitiation(
+                    payment: $payment,
+                    token: $token,
+                    authority: $authority
                 );
 
             return response()->json([
                 'success' => true,
                 'statusCode' => 200,
-                'message' => 'Payment started successfully.',
-
+                'message' => 'Deposit payment started successfully.',
                 'data' => [
                     'payment_id' => $payment->id,
                     'booking_id' => $booking->id,
@@ -182,12 +203,16 @@ class PaymentController extends Controller
                     'status' => $payment->status,
                     'gateway' => $payment->gateway,
                     'authority' => $payment->authority,
-                    'payment_url' =>
-                        $paymentData['payment_url'],
+                    'payment_url' => $paymentUrl,
                 ],
             ], 200);
 
         } catch (RuntimeException $e) {
+
+            Log::warning('Deposit payment initiation rejected', [
+                'booking_id' => $bookingId,
+                'error' => $e->getMessage(),
+            ]);
 
             return response()->json([
                 'success' => false,
@@ -197,11 +222,15 @@ class PaymentController extends Controller
 
         } catch (Throwable $e) {
 
+            Log::error('Deposit payment initiation failed', [
+                'booking_id' => $bookingId,
+                'error' => $e->getMessage(),
+            ]);
+
             return response()->json([
                 'success' => false,
                 'statusCode' => 500,
-                'message' => 'Failed to start payment.',
-                'error' => $e->getMessage(),
+                'message' => 'Failed to start deposit payment.',
             ], 500);
         }
     }
@@ -325,46 +354,77 @@ class PaymentController extends Controller
                 ], 404);
             }
 
-            $payment = $this->paymentService
-                ->createRemainingPayment(
+            /*
+            |--------------------------------------------------------------------------
+            | Reserve Payment Initiation
+            |--------------------------------------------------------------------------
+            |
+            | Booking and Payment are locked inside PaymentService.
+            | A second request cannot reserve the same payment.
+            |
+            */
+
+            $reservation = $this->paymentService
+                ->reserveRemainingPaymentInitiation(
                     $booking,
                     $client
                 );
 
-            if ($payment->status === 'paid') {
-                throw new RuntimeException(
-                    'Remaining balance has already been paid.'
-                );
-            }
+            $payment = $reservation['payment'];
+            $token = $reservation['token'];
+
+            /*
+            |--------------------------------------------------------------------------
+            | Request ZarinPal Payment
+            |--------------------------------------------------------------------------
+            |
+            | Do not hold a database transaction during HTTP requests.
+            |
+            */
 
             $paymentData = app(ZarinPalService::class)
                 ->requestPayment(
                     amount: (float) $payment->amount,
-
-                    callbackUrl:
-                    config('services.zarinpal.callback_url'),
-
-                    description:
-                    'NIL booking remaining payment #'
-                    . $booking->id,
-
+                    callbackUrl: config('services.zarinpal.callback_url'),
+                    description: 'NIL booking remaining payment #' . $booking->id,
                     email: $client->email,
-
-                    mobile: $client->phone,
+                    mobile: $client->phone
                 );
 
+            $authority = trim(
+                (string) ($paymentData['authority'] ?? '')
+            );
+
+            $paymentUrl = trim(
+                (string) ($paymentData['payment_url'] ?? '')
+            );
+
+            if ($authority === '' || $paymentUrl === '') {
+                throw new RuntimeException(
+                    'ZarinPal did not return valid payment information.'
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Complete Payment Initiation
+            |--------------------------------------------------------------------------
+            |
+            | Authority is saved only when initiation token matches.
+            |
+            */
+
             $payment = $this->paymentService
-                ->setAuthority(
-                    $payment,
-                    $paymentData['authority']
+                ->completeRemainingPaymentInitiation(
+                    payment: $payment,
+                    token: $token,
+                    authority: $authority
                 );
 
             return response()->json([
                 'success' => true,
                 'statusCode' => 200,
-                'message' =>
-                    'Remaining payment started successfully.',
-
+                'message' => 'Remaining payment started successfully.',
                 'data' => [
                     'payment_id' => $payment->id,
                     'booking_id' => $booking->id,
@@ -373,12 +433,16 @@ class PaymentController extends Controller
                     'status' => $payment->status,
                     'gateway' => $payment->gateway,
                     'authority' => $payment->authority,
-                    'payment_url' =>
-                        $paymentData['payment_url'],
+                    'payment_url' => $paymentUrl,
                 ],
             ], 200);
 
         } catch (RuntimeException $e) {
+
+            Log::warning('Remaining payment initiation rejected', [
+                'booking_id' => $bookingId,
+                'error' => $e->getMessage(),
+            ]);
 
             return response()->json([
                 'success' => false,
@@ -388,12 +452,15 @@ class PaymentController extends Controller
 
         } catch (Throwable $e) {
 
+            Log::error('Remaining payment initiation failed', [
+                'booking_id' => $bookingId,
+                'error' => $e->getMessage(),
+            ]);
+
             return response()->json([
                 'success' => false,
                 'statusCode' => 500,
-                'message' =>
-                    'Failed to start remaining payment.',
-                'error' => $e->getMessage(),
+                'message' => 'Failed to start remaining payment.',
             ], 500);
         }
     }
@@ -404,16 +471,21 @@ class PaymentController extends Controller
     |--------------------------------------------------------------------------
     */
 
+
     public function callback(Request $request): JsonResponse
     {
-        try {
-            $authority = trim(
-                (string) $request->query('Authority')
-            );
+        $authority = trim((string) $request->query('Authority'));
 
-            $status = strtoupper(
-                trim((string) $request->query('Status'))
-            );
+        $status = strtoupper(
+            trim((string) $request->query('Status'))
+        );
+
+        $payment = null;
+        $verifyResult = null;
+        $transactionId = null;
+        $gatewayVerified = false;
+
+        try {
 
             /*
             |--------------------------------------------------------------------------
@@ -425,28 +497,7 @@ class PaymentController extends Controller
                 return response()->json([
                     'success' => false,
                     'statusCode' => 422,
-                    'message' =>
-                        'ZarinPal authority is missing.',
-                ], 422);
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Payment Cancelled / Failed
-            |--------------------------------------------------------------------------
-            */
-
-            if ($status !== 'OK') {
-                return response()->json([
-                    'success' => false,
-                    'statusCode' => 422,
-                    'message' =>
-                        'Payment was cancelled or failed.',
-
-                    'data' => [
-                        'authority' => $authority,
-                        'status' => $status,
-                    ],
+                    'message' => 'ZarinPal authority is missing.',
                 ], 422);
             }
 
@@ -454,24 +505,20 @@ class PaymentController extends Controller
             |--------------------------------------------------------------------------
             | Find Payment
             |--------------------------------------------------------------------------
-            |
-            | Callback can belong to:
-            |
-            | deposit
-            | remaining
-            |
             */
 
             $payment = Payment::query()
                 ->where('authority', $authority)
                 ->where('gateway', 'zarinpal')
-                ->whereIn('type', [
-                    'deposit',
-                    'remaining',
-                ])
+                ->whereIn('type', ['deposit', 'remaining'])
                 ->first();
 
             if (!$payment) {
+                Log::warning('ZarinPal callback: payment not found', [
+                    'authority' => $authority,
+                    'status' => $status,
+                ]);
+
                 return response()->json([
                     'success' => false,
                     'statusCode' => 404,
@@ -481,7 +528,7 @@ class PaymentController extends Controller
 
             /*
             |--------------------------------------------------------------------------
-            | Idempotency
+            | Already Paid
             |--------------------------------------------------------------------------
             */
 
@@ -489,53 +536,81 @@ class PaymentController extends Controller
                 return response()->json([
                     'success' => true,
                     'statusCode' => 200,
-                    'message' =>
-                        'Payment has already been verified.',
-
+                    'message' => 'Payment has already been verified.',
                     'data' => [
                         'payment_id' => $payment->id,
-                        'booking_id' =>
-                            $payment->booking_id,
+                        'booking_id' => $payment->booking_id,
                         'type' => $payment->type,
                         'amount' => $payment->amount,
                         'status' => $payment->status,
-                        'transaction_id' =>
-                            $payment->transaction_id,
-                        'authority' =>
-                            $payment->authority,
+                        'transaction_id' => $payment->transaction_id,
+                        'authority' => $payment->authority,
                     ],
                 ], 200);
             }
 
             /*
             |--------------------------------------------------------------------------
-            | Only Pending Payments Can Be Verified
+            | Callback Status
+            |--------------------------------------------------------------------------
+            */
+
+            if ($status !== 'OK') {
+                Log::info('ZarinPal callback: payment not completed', [
+                    'payment_id' => $payment->id,
+                    'authority' => $authority,
+                    'status' => $status,
+                ]);
+
+                return response()->json([
+                    'success' => false,
+                    'statusCode' => 422,
+                    'message' => 'Payment was cancelled or failed.',
+                    'data' => [
+                        'authority' => $authority,
+                        'status' => $status,
+                    ],
+                ], 422);
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Pending Payment Required
             |--------------------------------------------------------------------------
             */
 
             if ($payment->status !== 'pending') {
+                Log::warning('ZarinPal callback: invalid payment state', [
+                    'payment_id' => $payment->id,
+                    'payment_status' => $payment->status,
+                    'authority' => $authority,
+                ]);
+
                 return response()->json([
                     'success' => false,
-                    'statusCode' => 422,
-                    'message' =>
-                        'This payment cannot be verified.',
-                ], 422);
+                    'statusCode' => 409,
+                    'message' => 'Payment requires manual review.',
+                ], 409);
             }
 
             /*
             |--------------------------------------------------------------------------
             | Verify With ZarinPal
             |--------------------------------------------------------------------------
+            |
+            | Amount is stored in toman.
+            | ZarinPalService must handle conversion to rial.
+            |
             */
 
             $verifyResult = app(ZarinPalService::class)
                 ->verifyPayment(
                     amount: (float) $payment->amount,
-                    authority: $payment->authority
+                    authority: $authority
                 );
 
-            $transactionId = (string) (
-                $verifyResult['ref_id'] ?? ''
+            $transactionId = trim(
+                (string) ($verifyResult['ref_id'] ?? '')
             );
 
             if ($transactionId === '') {
@@ -544,10 +619,23 @@ class PaymentController extends Controller
                 );
             }
 
+            $gatewayVerified = true;
+
+            Log::info('ZarinPal payment verified by gateway', [
+                'payment_id' => $payment->id,
+                'booking_id' => $payment->booking_id,
+                'authority' => $authority,
+                'transaction_id' => $transactionId,
+                'amount' => $payment->amount,
+            ]);
+
             /*
             |--------------------------------------------------------------------------
-            | Mark Payment As Paid
+            | Save Verified Payment
             |--------------------------------------------------------------------------
+            |
+            | PaymentService performs database locking.
+            |
             */
 
             if ($payment->type === 'deposit') {
@@ -557,8 +645,7 @@ class PaymentController extends Controller
                         payment: $payment,
                         gateway: 'zarinpal',
                         transactionId: $transactionId,
-                        verifiedAmount:
-                        (float) $payment->amount
+                        verifiedAmount: (float) $payment->amount
                     );
 
             } elseif ($payment->type === 'remaining') {
@@ -568,8 +655,7 @@ class PaymentController extends Controller
                         payment: $payment,
                         gateway: 'zarinpal',
                         transactionId: $transactionId,
-                        verifiedAmount:
-                        (float) $payment->amount
+                        verifiedAmount: (float) $payment->amount
                     );
 
             } else {
@@ -584,79 +670,86 @@ class PaymentController extends Controller
             |--------------------------------------------------------------------------
             */
 
-            $booking = $paidPayment
-                ->booking()
-                ->first();
+            $booking = $paidPayment->booking()->first();
 
             /*
             |--------------------------------------------------------------------------
-            | Response
+            | Success Response
             |--------------------------------------------------------------------------
             */
 
             return response()->json([
                 'success' => true,
                 'statusCode' => 200,
-                'message' =>
-                    'Payment verified successfully.',
-
+                'message' => 'Payment verified successfully.',
                 'data' => [
                     'payment_id' => $paidPayment->id,
-
-                    'booking_id' =>
-                        $paidPayment->booking_id,
-
-                    'amount' =>
-                        $paidPayment->amount,
-
-                    'type' =>
-                        $paidPayment->type,
-
-                    'status' =>
-                        $paidPayment->status,
-
-                    'payment_status' =>
-                        $booking?->payment_status,
-
-                    'booking_status' =>
-                        $booking?->status,
-
-                    'paid_amount' =>
-                        $booking?->paid_amount,
-
-                    'authority' =>
-                        $paidPayment->authority,
-
-                    'transaction_id' =>
-                        $paidPayment->transaction_id,
-
-                    'paid_at' =>
-                        $paidPayment->paid_at,
-
-                    'verify' =>
-                        $verifyResult,
+                    'booking_id' => $paidPayment->booking_id,
+                    'amount' => $paidPayment->amount,
+                    'type' => $paidPayment->type,
+                    'status' => $paidPayment->status,
+                    'payment_status' => $booking?->payment_status,
+                    'booking_status' => $booking?->status,
+                    'paid_amount' => $booking?->paid_amount,
+                    'authority' => $paidPayment->authority,
+                    'transaction_id' => $paidPayment->transaction_id,
+                    'paid_at' => $paidPayment->paid_at,
+                    'verify' => $verifyResult,
                 ],
             ], 200);
 
-        } catch (RuntimeException $e) {
+        } catch (Throwable $e) {
+
+            /*
+            |--------------------------------------------------------------------------
+            | Log Payment Failure
+            |--------------------------------------------------------------------------
+            */
+
+            Log::error('ZarinPal callback failed', [
+                'payment_id' => $payment?->id,
+                'booking_id' => $payment?->booking_id,
+                'authority' => $authority,
+                'transaction_id' => $transactionId,
+                'gateway_verified' => $gatewayVerified,
+                'error' => $e->getMessage(),
+            ]);
+
+            /*
+            |--------------------------------------------------------------------------
+            | Gateway Verified But Local Save Failed
+            |--------------------------------------------------------------------------
+            |
+            | Do not mark this payment as failed.
+            | It requires reconciliation.
+            |
+            */
+
+            if ($gatewayVerified) {
+
+                return response()->json([
+                    'success' => false,
+                    'statusCode' => 409,
+                    'message' =>
+                        'Payment was verified by the gateway but could not be finalized. Please contact support.',
+                    'data' => [
+                        'payment_id' => $payment?->id,
+                        'booking_id' => $payment?->booking_id,
+                        'authority' => $authority,
+                        'transaction_id' => $transactionId,
+                        'requires_reconciliation' => true,
+                    ],
+                ], 409);
+            }
 
             return response()->json([
                 'success' => false,
                 'statusCode' => 422,
-                'message' => $e->getMessage(),
+                'message' => 'Payment verification failed.',
             ], 422);
-
-        } catch (Throwable $e) {
-
-            return response()->json([
-                'success' => false,
-                'statusCode' => 500,
-                'message' =>
-                    'Failed to verify payment.',
-                'error' => $e->getMessage(),
-            ], 500);
         }
     }
+
 
     /*
     |--------------------------------------------------------------------------

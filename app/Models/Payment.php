@@ -23,11 +23,15 @@ class Payment extends Model
         'authority',
         'offline_id',
         'paid_at',
+        'initiation_token',
+        'initiation_expires_at',
+        'pos_terminal_id',
     ];
 
     protected $casts = [
         'amount' => 'decimal:2',
         'paid_at' => 'datetime',
+        'initiation_expires_at' => 'datetime',
     ];
 
     public function booking(): BelongsTo
@@ -60,6 +64,21 @@ class Payment extends Model
     {
         return $this->hasMany(
             AccountingTransaction::class,
+            'payment_id'
+        );
+    }
+    public function posTerminal(): \Illuminate\Database\Eloquent\Relations\BelongsTo
+    {
+        return $this->belongsTo(
+            \App\Models\PosTerminal::class,
+            'pos_terminal_id'
+        );
+    }
+
+    public function posPaymentRequests(): \Illuminate\Database\Eloquent\Relations\HasMany
+    {
+        return $this->hasMany(
+            \App\Models\PosPaymentRequest::class,
             'payment_id'
         );
     }

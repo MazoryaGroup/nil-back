@@ -8,12 +8,12 @@ use App\Helpers\JalaliHelper;
 use App\Models\Booking;
 use App\Models\Client;
 use Ariaieboy\FilamentJalaliDatetimepicker\Forms\Components\JalaliDatePicker;
+use Ariaieboy\FilamentJalaliDatetimepicker\Forms\Components\JalaliDateTimePicker;
 use Filament\Forms;
 use Filament\Forms\Form;
 use Filament\Resources\Resource;
 use Filament\Tables;
 use Filament\Tables\Table;
-use Ariaieboy\FilamentJalaliDatetimepicker\Forms\Components\JalaliDateTimePicker;
 
 class BookingResource extends Resource
 {
@@ -29,13 +29,19 @@ class BookingResource extends Resource
 
     protected static ?string $navigationGroup = 'NIL';
 
+    /*
+    |--------------------------------------------------------------------------
+    | Form
+    |--------------------------------------------------------------------------
+    */
+
     public static function form(Form $form): Form
     {
         return $form->schema([
 
             /*
             |--------------------------------------------------------------------------
-            | اطلاعات رزرو
+            | Booking Information
             |--------------------------------------------------------------------------
             */
 
@@ -50,21 +56,17 @@ class BookingResource extends Resource
                                 ->get()
                                 ->mapWithKeys(function ($client) {
                                     return [
-                                        $client->id => ($client->name ?: 'بدون نام')
+                                        $client->id =>
+                                            ($client->name ?: 'بدون نام')
                                             . ' - '
                                             . $client->phone,
                                     ];
                                 })
+                                ->toArray()
                         )
                         ->searchable()
                         ->preload()
                         ->required(),
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | تاریخ رزرو - شمسی
-                    |--------------------------------------------------------------------------
-                    */
 
                     JalaliDatePicker::make('booking_date')
                         ->label('تاریخ رزرو')
@@ -87,33 +89,72 @@ class BookingResource extends Resource
 
             /*
             |--------------------------------------------------------------------------
-            | مالی
+            | Financial Information
             |--------------------------------------------------------------------------
             */
 
-            Forms\Components\Section::make('مالی')
+            Forms\Components\Section::make('اطلاعات مالی')
+                ->description('تمام مبالغ به تومان نمایش داده می‌شوند.')
                 ->schema([
 
                     Forms\Components\TextInput::make('subtotal')
-                        ->label('مبلغ کل')
+                        ->label('جمع قیمت اولیه خدمات')
                         ->numeric()
+                        ->suffix('تومان')
                         ->minValue(0)
                         ->default(0)
+                        ->readOnly()
                         ->required(),
+
+                    Forms\Components\TextInput::make('discount_amount')
+                        ->label('مبلغ تخفیف')
+                        ->numeric()
+                        ->suffix('تومان')
+                        ->minValue(0)
+                        ->default(0)
+                        ->readOnly(),
+
+                    Forms\Components\TextInput::make('total_amount')
+                        ->label('مبلغ نهایی رزرو')
+                        ->numeric()
+                        ->suffix('تومان')
+                        ->minValue(0)
+                        ->default(0)
+                        ->readOnly(),
 
                     Forms\Components\TextInput::make('deposit_amount')
                         ->label('مبلغ بیعانه')
                         ->numeric()
+                        ->suffix('تومان')
                         ->minValue(0)
                         ->default(0)
+                        ->readOnly()
                         ->required(),
 
                     Forms\Components\TextInput::make('paid_amount')
                         ->label('مبلغ پرداخت‌شده')
                         ->numeric()
+                        ->suffix('تومان')
                         ->minValue(0)
                         ->default(0)
+                        ->readOnly()
                         ->required(),
+
+                    Forms\Components\Placeholder::make('remaining_amount')
+                        ->label('مانده قابل پرداخت')
+                        ->content(function (?Booking $record): string {
+                            if (!$record) {
+                                return 'پس از ثبت رزرو محاسبه می‌شود.';
+                            }
+
+                            $remaining = max(
+                                0,
+                                (float) $record->total_amount
+                                - (float) $record->paid_amount
+                            );
+
+                            return number_format($remaining) . ' تومان';
+                        }),
 
                     Forms\Components\Select::make('payment_status')
                         ->label('وضعیت پرداخت')
@@ -131,11 +172,11 @@ class BookingResource extends Resource
 
             /*
             |--------------------------------------------------------------------------
-            | وضعیت
+            | Booking Status
             |--------------------------------------------------------------------------
             */
 
-            Forms\Components\Section::make('وضعیت')
+            Forms\Components\Section::make('وضعیت رزرو')
                 ->schema([
 
                     Forms\Components\Select::make('status')
@@ -151,16 +192,6 @@ class BookingResource extends Resource
                         ])
                         ->required()
                         ->default('pending'),
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | فعلاً DateTimePicker اصلی
-                    |--------------------------------------------------------------------------
-                    |
-                    | تاریخ + ساعت لغو را در مرحله بعد به نسخه شمسی DateTime
-                    | تبدیل می‌کنیم تا ساعت و ذخیره Gregorian دچار مشکل نشود.
-                    |
-                    */
 
                     JalaliDateTimePicker::make('cancelled_at')
                         ->label('زمان لغو')
@@ -180,8 +211,15 @@ class BookingResource extends Resource
 
                 ])
                 ->columns(2),
+
         ]);
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Table
+    |--------------------------------------------------------------------------
+    */
 
     public static function table(Table $table): Table
     {
@@ -203,17 +241,16 @@ class BookingResource extends Resource
 
                 /*
                 |--------------------------------------------------------------------------
-                | تاریخ رزرو - نمایش شمسی
+                | Jalali Date
                 |--------------------------------------------------------------------------
                 */
 
                 Tables\Columns\TextColumn::make('booking_date')
-                    ->label('تاریخ')
+                    ->label('تاریخ رزرو')
                     ->formatStateUsing(
-                        fn ($state) => JalaliHelper::date(
-                            $state,
-                            'Y/m/d'
-                        )
+                        fn ($state) => $state
+                            ? JalaliHelper::date($state, 'Y/m/d')
+                            : '-'
                     )
                     ->sortable(),
 
@@ -223,23 +260,160 @@ class BookingResource extends Resource
                 Tables\Columns\TextColumn::make('end_time')
                     ->label('پایان'),
 
+                /*
+                |--------------------------------------------------------------------------
+                | Financial Columns - Toman
+                |--------------------------------------------------------------------------
+                */
+
                 Tables\Columns\TextColumn::make('subtotal')
-                    ->label('مبلغ کل')
-                    ->money('IRR')
+                    ->label('جمع قیمت خدمات')
+                    ->formatStateUsing(
+                        fn ($state) =>
+                            number_format((float) $state) . ' تومان'
+                    )
+                    ->sortable(),
+
+                Tables\Columns\TextColumn::make('discount_amount')
+                    ->label('تخفیف')
+                    ->formatStateUsing(
+                        fn ($state) =>
+                            number_format((float) $state) . ' تومان'
+                    )
+                    ->toggleable(isToggledHiddenByDefault: true),
+
+                Tables\Columns\TextColumn::make('total_amount')
+                    ->label('مبلغ نهایی')
+                    ->formatStateUsing(
+                        fn ($state) =>
+                            number_format((float) $state) . ' تومان'
+                    )
                     ->sortable(),
 
                 Tables\Columns\TextColumn::make('deposit_amount')
                     ->label('بیعانه')
-                    ->money('IRR')
+                    ->formatStateUsing(
+                        fn ($state) =>
+                            number_format((float) $state) . ' تومان'
+                    )
                     ->sortable(),
 
                 Tables\Columns\TextColumn::make('paid_amount')
                     ->label('پرداخت‌شده')
-                    ->money('IRR')
+                    ->formatStateUsing(
+                        fn ($state) =>
+                            number_format((float) $state) . ' تومان'
+                    )
                     ->sortable(),
 
+                /*
+                |--------------------------------------------------------------------------
+                | Remaining Amount
+                |--------------------------------------------------------------------------
+                */
+
+                Tables\Columns\TextColumn::make('remaining_amount')
+                    ->label('مانده پرداخت')
+                    ->state(
+                        fn (Booking $record): float => max(
+                            0,
+                            round(
+                                (float) $record->total_amount
+                                - (float) $record->paid_amount,
+                                2
+                            )
+                        )
+                    )
+                    ->formatStateUsing(
+                        fn ($state) =>
+                            number_format((float) $state) . ' تومان'
+                    )
+                    ->color(
+                        fn ($state) =>
+                        (float) $state > 0 ? 'danger' : 'success'
+                    ),
+
+                /*
+                |--------------------------------------------------------------------------
+                | Overpaid Amount
+                |--------------------------------------------------------------------------
+                */
+
+                Tables\Columns\TextColumn::make('overpaid_amount')
+                    ->label('اضافه‌پرداخت')
+                    ->state(
+                        fn (Booking $record): float => max(
+                            0,
+                            round(
+                                (float) $record->paid_amount
+                                - (float) $record->total_amount,
+                                2
+                            )
+                        )
+                    )
+                    ->formatStateUsing(
+                        fn ($state) =>
+                            number_format((float) $state) . ' تومان'
+                    )
+                    ->color(
+                        fn ($state) =>
+                        (float) $state > 0 ? 'warning' : 'gray'
+                    )
+                    ->weight(
+                        fn ($state) =>
+                        (float) $state > 0 ? 'bold' : 'normal'
+                    ),
+
+                /*
+                |--------------------------------------------------------------------------
+                | Refund Review Status
+                |--------------------------------------------------------------------------
+                */
+
+                Tables\Columns\TextColumn::make('refund_review_status')
+                    ->label('بررسی اضافه‌پرداخت')
+                    ->state(
+                        function (Booking $record): string {
+
+                            $overpaid = round(
+                                (float) $record->paid_amount
+                                - (float) $record->total_amount,
+                                2
+                            );
+
+                            return $overpaid > 0
+                                ? 'نیازمند بررسی'
+                                : 'بدون اضافه‌پرداخت';
+                        }
+                    )
+                    ->badge()
+                    ->color(
+                        fn (string $state) =>
+                        $state === 'نیازمند بررسی'
+                            ? 'warning'
+                            : 'success'
+                    ),
+
+                /*
+                |--------------------------------------------------------------------------
+                | Booking Status
+                |--------------------------------------------------------------------------
+                */
+
                 Tables\Columns\BadgeColumn::make('status')
-                    ->label('وضعیت')
+                    ->label('وضعیت رزرو')
+                    ->formatStateUsing(
+                        fn ($state) => match ($state) {
+                            'pending' => 'در انتظار',
+                            'awaiting_payment' => 'در انتظار پرداخت',
+                            'confirmed' => 'تأییدشده',
+                            'completed' => 'تکمیل‌شده',
+                            'cancelled' => 'لغوشده',
+                            'rejected' => 'ردشده',
+                            'no_show' => 'عدم حضور',
+                            default => $state,
+                        }
+                    )
                     ->colors([
                         'warning' => 'pending',
                         'info' => 'awaiting_payment',
@@ -249,8 +423,23 @@ class BookingResource extends Resource
                         'gray' => 'rejected',
                     ]),
 
+                /*
+                |--------------------------------------------------------------------------
+                | Payment Status
+                |--------------------------------------------------------------------------
+                */
+
                 Tables\Columns\BadgeColumn::make('payment_status')
-                    ->label('پرداخت')
+                    ->label('وضعیت پرداخت')
+                    ->formatStateUsing(
+                        fn ($state) => match ($state) {
+                            'pending' => 'در انتظار',
+                            'paid' => 'پرداخت‌شده',
+                            'failed' => 'ناموفق',
+                            'refunded' => 'مستردشده',
+                            default => $state,
+                        }
+                    )
                     ->colors([
                         'warning' => 'pending',
                         'success' => 'paid',
@@ -260,25 +449,34 @@ class BookingResource extends Resource
 
                 /*
                 |--------------------------------------------------------------------------
-                | تاریخ ایجاد - نمایش شمسی
+                | Created At
                 |--------------------------------------------------------------------------
                 */
 
                 Tables\Columns\TextColumn::make('created_at')
-                    ->label('ایجادشده')
+                    ->label('تاریخ ایجاد')
                     ->formatStateUsing(
-                        fn ($state) => JalaliHelper::dateTime(
-                            $state,
-                            'Y/m/d H:i'
-                        )
+                        fn ($state) => $state
+                            ? JalaliHelper::dateTime(
+                                $state,
+                                'Y/m/d H:i'
+                            )
+                            : '-'
                     )
                     ->sortable(),
 
             ])
+
+            /*
+            |--------------------------------------------------------------------------
+            | Filters
+            |--------------------------------------------------------------------------
+            */
+
             ->filters([
 
                 Tables\Filters\SelectFilter::make('status')
-                    ->label('وضعیت')
+                    ->label('وضعیت رزرو')
                     ->options([
                         'pending' => 'در انتظار',
                         'awaiting_payment' => 'در انتظار پرداخت',
@@ -297,12 +495,6 @@ class BookingResource extends Resource
                         'failed' => 'ناموفق',
                         'refunded' => 'مستردشده',
                     ]),
-
-                /*
-                |--------------------------------------------------------------------------
-                | فیلتر تاریخ رزرو - شمسی
-                |--------------------------------------------------------------------------
-                */
 
                 Tables\Filters\Filter::make('booking_date')
                     ->label('تاریخ رزرو')
@@ -340,17 +532,32 @@ class BookingResource extends Resource
                                 )
                             );
                     }),
+
             ])
+
+            /*
+            |--------------------------------------------------------------------------
+            | Actions
+            |--------------------------------------------------------------------------
+            */
+
             ->actions([
-                Tables\Actions\EditAction::make(),
-                Tables\Actions\DeleteAction::make(),
+                Tables\Actions\EditAction::make()
+                    ->label('ویرایش'),
             ])
+
             ->bulkActions([
                 Tables\Actions\BulkActionGroup::make([
                     Tables\Actions\DeleteBulkAction::make(),
                 ]),
             ]);
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Relation Managers
+    |--------------------------------------------------------------------------
+    */
 
     public static function getRelations(): array
     {
@@ -359,6 +566,12 @@ class BookingResource extends Resource
             RelationManagers\PaymentsRelationManager::class,
         ];
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Pages
+    |--------------------------------------------------------------------------
+    */
 
     public static function getPages(): array
     {

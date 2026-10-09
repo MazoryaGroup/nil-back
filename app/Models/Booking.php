@@ -40,6 +40,41 @@ class Booking extends Model
 
     /*
     |--------------------------------------------------------------------------
+    | Financial Attributes
+    |--------------------------------------------------------------------------
+    */
+
+    public function getRemainingAmountAttribute(): float
+    {
+        return max(
+            0,
+            round(
+                (float) $this->total_amount
+                - (float) $this->paid_amount,
+                2
+            )
+        );
+    }
+
+    public function getIsFullyPaidAttribute(): bool
+    {
+        return $this->remaining_amount <= 0;
+    }
+
+    public function getOverpaidAmountAttribute(): float
+    {
+        return max(
+            0,
+            round(
+                (float) $this->paid_amount
+                - (float) $this->total_amount,
+                2
+            )
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
     | Relations
     |--------------------------------------------------------------------------
     */
@@ -73,6 +108,7 @@ class Booking extends Model
     {
         return $this->hasMany(SmsLog::class);
     }
+
     public function referralRewardUsage(): HasOne
     {
         return $this->hasOne(

@@ -42,9 +42,11 @@ class BookingService
             }
 
             /*
-             * Discount Code and Referral Reward
-             * cannot be used together.
-             */
+            |--------------------------------------------------------------------------
+            | Discount Code and Referral Reward cannot be used together
+            |--------------------------------------------------------------------------
+            */
+
             if (
                 $discountCode !== null &&
                 trim($discountCode) !== '' &&
@@ -56,7 +58,15 @@ class BookingService
                 ]);
             }
 
+            /*
+            |--------------------------------------------------------------------------
+            | Initial Variables
+            |--------------------------------------------------------------------------
+            */
+
             $bookingServices = [];
+            $pendingServices = [];
+
             $bookingStart = null;
             $bookingEnd = null;
 
@@ -65,9 +75,18 @@ class BookingService
             $totalAmount = 0;
             $depositAmount = 0;
 
-            $pendingServices = [];
+            $availabilityService = app(
+                BookingAvailabilityService::class
+            );
+
+            /*
+            |--------------------------------------------------------------------------
+            | Validate Booking Services
+            |--------------------------------------------------------------------------
+            */
 
             foreach ($services as $item) {
+
                 $serviceId = (int) ($item['service_id'] ?? 0);
                 $staffId = (int) ($item['staff_id'] ?? 0);
                 $startTime = $item['start_time'] ?? null;
@@ -78,6 +97,12 @@ class BookingService
                             'Each service must have service_id, staff_id and start_time.',
                     ]);
                 }
+
+                /*
+                |--------------------------------------------------------------------------
+                | Check Service
+                |--------------------------------------------------------------------------
+                */
 
                 $service = Service::query()
                     ->where('id', $serviceId)
@@ -91,6 +116,12 @@ class BookingService
                     ]);
                 }
 
+                /*
+                |--------------------------------------------------------------------------
+                | Check Staff
+                |--------------------------------------------------------------------------
+                */
+
                 $staff = Staff::query()
                     ->where('id', $staffId)
                     ->where('is_active', true)
@@ -102,6 +133,12 @@ class BookingService
                             "Staff {$staffId} is not available.",
                     ]);
                 }
+
+                /*
+                |--------------------------------------------------------------------------
+                | Check Staff Service
+                |--------------------------------------------------------------------------
+                */
 
                 $staffService = $staff->staffServices()
                     ->where('service_id', $serviceId)
@@ -115,12 +152,26 @@ class BookingService
                     ]);
                 }
 
-                $duration = (int) $staffService->duration;
-                $price = (float) $staffService->price;
+                $duration = (int) $service->duration;
+                $price = (float) $service->price;
+                $deposit = (float) $service->deposit_amount;
+
+                if ($duration <= 0) {
+                    throw ValidationException::withMessages([
+                        'services' =>
+                            "Invalid duration for service {$serviceId}.",
+                    ]);
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | Validate Start Time
+                |--------------------------------------------------------------------------
+                */
 
                 try {
                     $start = Carbon::createFromFormat(
-                        'H:i',
+                        '!H:i',
                         $startTime
                     );
                 } catch (\Throwable $e) {
@@ -139,23 +190,46 @@ class BookingService
 
                 $end = $start->copy()->addMinutes($duration);
 
-                $normalizedStartTime =
-                    $start->format('H:i:s');
+                if (!$start->isSameDay($end)) {
+                    throw ValidationException::withMessages([
+                        'services' =>
+                            'Service cannot extend into the next day.',
+                    ]);
+                }
 
-                $normalizedEndTime =
-                    $end->format('H:i:s');
+                $normalizedStartTime = $start->format('H:i:s');
+                $normalizedEndTime = $end->format('H:i:s');
 
-                $availabilityService = app(
-                    BookingAvailabilityService::class
+                /*
+                |--------------------------------------------------------------------------
+                | Prevent Booking in the Past
+                |--------------------------------------------------------------------------
+                */
+
+                $serviceDateTime = Carbon::createFromFormat(
+                    '!Y-m-d H:i:s',
+                    $date . ' ' . $normalizedStartTime
                 );
 
-                $isAvailable =
-                    $availabilityService->isTimeAvailable(
-                        $staffId,
-                        $date,
-                        $normalizedStartTime,
-                        $normalizedEndTime
-                    );
+                if ($serviceDateTime->lte(now())) {
+                    throw ValidationException::withMessages([
+                        'services' =>
+                            "The selected time {$startTime} must be in the future.",
+                    ]);
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | Check Staff Availability
+                |--------------------------------------------------------------------------
+                */
+
+                $isAvailable = $availabilityService->isTimeAvailable(
+                    $staffId,
+                    $date,
+                    $normalizedStartTime,
+                    $normalizedEndTime
+                );
 
                 if (!$isAvailable) {
                     throw ValidationException::withMessages([
@@ -164,59 +238,108 @@ class BookingService
                     ]);
                 }
 
+                /*
+|--------------------------------------------------------------------------
+| Prevent Client Overlap Across Different Bookings
+|--------------------------------------------------------------------------
+*/
+
+                $hasClientConflict = BookingServiceModel::query()
+                    ->whereHas('booking', function ($query) use ($clientId, $date) {
+                        $query->where('client_id', $clientId)
+                            ->whereDate('booking_date', $date)
+                            ->whereNotIn('status', [
+                                'cancelled',
+                                'rejected',
+                                'no_show',
+                            ]);
+                    })
+                    ->where('start_time', '<', $normalizedEndTime)
+                    ->where('end_time', '>', $normalizedStartTime)
+                    ->exists();
+
+                if ($hasClientConflict) {
+                    throw ValidationException::withMessages([
+                        'services' =>
+                            'You already have another booking at the selected time.',
+                    ]);
+                }
+                /*
+                |--------------------------------------------------------------------------
+                | Prevent Overlapping Services for Same Client
+                |--------------------------------------------------------------------------
+                |
+                | Different staff members are allowed,
+                | but the client's services cannot overlap.
+                |
+                */
+
                 foreach ($pendingServices as $pendingService) {
-                    if (
-                        $pendingService['staff_id'] !==
-                        $staffId
-                    ) {
-                        continue;
-                    }
 
-                    $pendingStart =
-                        Carbon::createFromFormat(
-                            'H:i:s',
-                            $pendingService['start_time']
-                        );
+                    $pendingStart = Carbon::createFromFormat(
+                        '!H:i:s',
+                        $pendingService['start_time']
+                    );
 
-                    $pendingEnd =
-                        Carbon::createFromFormat(
-                            'H:i:s',
-                            $pendingService['end_time']
-                        );
+                    $pendingEnd = Carbon::createFromFormat(
+                        '!H:i:s',
+                        $pendingService['end_time']
+                    );
 
                     $overlaps =
-                        $start->lt($pendingEnd)
-                        && $end->gt($pendingStart);
+                        $start->lt($pendingEnd) &&
+                        $end->gt($pendingStart);
 
                     if ($overlaps) {
                         throw ValidationException::withMessages([
                             'services' =>
-                                'Service overlaps with another service for the selected staff member.',
+                                'Selected services cannot overlap, even with different staff members.',
                         ]);
                     }
                 }
 
-                $deposit =
-                    (float) $service->deposit_amount;
+                /*
+                |--------------------------------------------------------------------------
+                | Calculate Deposit
+                |--------------------------------------------------------------------------
+                */
+
+
+
+                /*
+                |--------------------------------------------------------------------------
+                | Calculate Booking Start and End
+                |--------------------------------------------------------------------------
+                */
 
                 if (
                     $bookingStart === null ||
                     $normalizedStartTime < $bookingStart
                 ) {
-                    $bookingStart =
-                        $normalizedStartTime;
+                    $bookingStart = $normalizedStartTime;
                 }
 
                 if (
                     $bookingEnd === null ||
                     $normalizedEndTime > $bookingEnd
                 ) {
-                    $bookingEnd =
-                        $normalizedEndTime;
+                    $bookingEnd = $normalizedEndTime;
                 }
+
+                /*
+                |--------------------------------------------------------------------------
+                | Calculate Amounts
+                |--------------------------------------------------------------------------
+                */
 
                 $subtotal += $price;
                 $depositAmount += $deposit;
+
+                /*
+                |--------------------------------------------------------------------------
+                | Prepare Booking Service
+                |--------------------------------------------------------------------------
+                */
 
                 $bookingServiceData = [
                     'service_id' => $serviceId,
@@ -228,34 +351,33 @@ class BookingService
                     'deposit_amount' => $deposit,
                 ];
 
-                $pendingServices[] =
-                    $bookingServiceData;
-
-                $bookingServices[] =
-                    $bookingServiceData;
+                $pendingServices[] = $bookingServiceData;
+                $bookingServices[] = $bookingServiceData;
             }
 
             /*
-             * ---------------------------------------------------------
-             * DISCOUNT / REFERRAL REWARD
-             * ---------------------------------------------------------
-             */
+            |--------------------------------------------------------------------------
+            | Discount / Referral Reward
+            |--------------------------------------------------------------------------
+            */
 
             $discount = null;
             $referralRewardService = null;
             $referralRewardResult = null;
 
             /*
-             * Generic Discount Code
-             */
+            |--------------------------------------------------------------------------
+            | Generic Discount Code
+            |--------------------------------------------------------------------------
+            */
+
             if (
                 $discountCode !== null &&
                 trim($discountCode) !== ''
             ) {
-                $normalizedDiscountCode =
-                    strtoupper(
-                        trim($discountCode)
-                    );
+                $normalizedDiscountCode = strtoupper(
+                    trim($discountCode)
+                );
 
                 $discount = DiscountCode::query()
                     ->whereRaw(
@@ -267,8 +389,7 @@ class BookingService
 
                 if (!$discount) {
                     throw ValidationException::withMessages([
-                        'discount_code' =>
-                            'Invalid discount code.',
+                        'discount_code' => 'Invalid discount code.',
                     ]);
                 }
 
@@ -303,8 +424,7 @@ class BookingService
 
                 if (
                     $discount->min_order_amount !== null &&
-                    $subtotal <
-                    (float) $discount->min_order_amount
+                    $subtotal < (float) $discount->min_order_amount
                 ) {
                     throw ValidationException::withMessages([
                         'discount_code' =>
@@ -314,8 +434,7 @@ class BookingService
 
                 if (
                     $discount->usage_limit !== null &&
-                    $discount->usage_count >=
-                    $discount->usage_limit
+                    $discount->usage_count >= $discount->usage_limit
                 ) {
                     throw ValidationException::withMessages([
                         'discount_code' =>
@@ -323,20 +442,12 @@ class BookingService
                     ]);
                 }
 
-                if (
-                    $discount->usage_limit_per_client !== null
-                ) {
-                    $clientUsageCount =
-                        DiscountUsage::query()
-                            ->where(
-                                'discount_code_id',
-                                $discount->id
-                            )
-                            ->where(
-                                'client_id',
-                                $clientId
-                            )
-                            ->count();
+                if ($discount->usage_limit_per_client !== null) {
+
+                    $clientUsageCount = DiscountUsage::query()
+                        ->where('discount_code_id', $discount->id)
+                        ->where('client_id', $clientId)
+                        ->count();
 
                     if (
                         $clientUsageCount >=
@@ -351,11 +462,9 @@ class BookingService
 
                 if ($discount->type === 'percentage') {
                     $discountAmount =
-                        $subtotal *
-                        ((float) $discount->value / 100);
+                        $subtotal * ((float) $discount->value / 100);
                 } else {
-                    $discountAmount =
-                        (float) $discount->value;
+                    $discountAmount = (float) $discount->value;
                 }
 
                 if (
@@ -368,20 +477,23 @@ class BookingService
                 }
 
                 if ($discountAmount > $subtotal) {
-                    $discountAmount =
-                        $subtotal;
+                    $discountAmount = $subtotal;
                 }
 
-                $discountAmount =
-                    round($discountAmount, 2);
+                $discountAmount = round($discountAmount, 2);
             }
 
             /*
-             * Referral Reward
-             */
+            |--------------------------------------------------------------------------
+            | Referral Reward
+            |--------------------------------------------------------------------------
+            */
+
             if ($useReferralReward) {
-                $referralRewardService =
-                    app(ReferralRewardService::class);
+
+                $referralRewardService = app(
+                    ReferralRewardService::class
+                );
 
                 $referralRewardResult =
                     $referralRewardService->calculateDiscount(
@@ -404,21 +516,25 @@ class BookingService
             }
 
             /*
-             * Final Total
-             */
-            $totalAmount =
-                $subtotal - $discountAmount;
+            |--------------------------------------------------------------------------
+            | Final Total
+            |--------------------------------------------------------------------------
+            */
+
+            $totalAmount = $subtotal - $discountAmount;
 
             if ($totalAmount < 0) {
                 $totalAmount = 0;
             }
 
-            $totalAmount =
-                round($totalAmount, 2);
+            $totalAmount = round($totalAmount, 2);
 
             /*
-             * Create Booking
-             */
+            |--------------------------------------------------------------------------
+            | Create Booking
+            |--------------------------------------------------------------------------
+            */
+
             $booking = Booking::create([
                 'client_id' => $clientId,
                 'booking_date' => $date,
@@ -439,8 +555,11 @@ class BookingService
             ]);
 
             /*
-             * Create Booking Services
-             */
+            |--------------------------------------------------------------------------
+            | Create Booking Services
+            |--------------------------------------------------------------------------
+            */
+
             foreach ($bookingServices as $bookingService) {
                 BookingServiceModel::create([
                     'booking_id' => $booking->id,
@@ -449,34 +568,31 @@ class BookingService
             }
 
             /*
-             * Record Generic Discount Usage
-             */
+            |--------------------------------------------------------------------------
+            | Record Generic Discount Usage
+            |--------------------------------------------------------------------------
+            */
+
             if (
                 $discount &&
                 $discountAmount > 0
             ) {
                 DiscountUsage::create([
-                    'discount_code_id' =>
-                        $discount->id,
-
-                    'client_id' =>
-                        $clientId,
-
-                    'booking_id' =>
-                        $booking->id,
-
-                    'discount_amount' =>
-                        $discountAmount,
+                    'discount_code_id' => $discount->id,
+                    'client_id' => $clientId,
+                    'booking_id' => $booking->id,
+                    'discount_amount' => $discountAmount,
                 ]);
 
-                $discount->increment(
-                    'usage_count'
-                );
+                $discount->increment('usage_count');
             }
 
             /*
-             * Record Referral Reward Usage
-             */
+            |--------------------------------------------------------------------------
+            | Record Referral Reward Usage
+            |--------------------------------------------------------------------------
+            */
+
             if (
                 $useReferralReward &&
                 $referralRewardResult &&
@@ -491,20 +607,23 @@ class BookingService
             }
 
             /*
-             * Convert Booking Hold
-             */
+            |--------------------------------------------------------------------------
+            | Convert Booking Hold
+            |--------------------------------------------------------------------------
+            */
+
             BookingHold::query()
-                ->where(
-                    'booking_id',
-                    $booking->id
-                )
-                ->where(
-                    'status',
-                    'active'
-                )
+                ->where('booking_id', $booking->id)
+                ->where('status', 'active')
                 ->update([
                     'status' => 'converted',
                 ]);
+
+            /*
+            |--------------------------------------------------------------------------
+            | Return Booking
+            |--------------------------------------------------------------------------
+            */
 
             return $booking->load([
                 'bookingServices.service',
@@ -513,7 +632,6 @@ class BookingService
             ]);
         });
     }
-
     public function cancelBooking(
         int $bookingId,
         int $clientId,

@@ -13,6 +13,9 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
+use App\Services\SmsService;
+use Illuminate\Support\Facades\Log;
+use Throwable;
 
 class AuthController extends Controller
 {
@@ -367,9 +370,34 @@ class AuthController extends Controller
         |--------------------------------------------------------------------------
         */
 
+
         $token = auth('api')->login($client);
 
+        /*
+        |--------------------------------------------------------------------------
+        | Send Welcome SMS After Successful Registration
+        |--------------------------------------------------------------------------
+        */
+
+        try {
+            app(SmsService::class)->sendWelcome($client);
+
+        } catch (Throwable $e) {
+
+            Log::warning('NIL welcome SMS failed', [
+                'client_id' => $client->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Registration Response
+        |--------------------------------------------------------------------------
+        */
+
         return response()->json([
+
             'success' => true,
             'statusCode' => 201,
             'message' => 'Registration completed successfully.',

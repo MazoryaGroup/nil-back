@@ -18,12 +18,15 @@ class BookingService extends Model
         'duration',
         'price',
         'deposit_amount',
+        'final_price',
+        'price_adjustment_reason',
     ];
 
     protected $casts = [
         'duration' => 'integer',
         'price' => 'decimal:2',
         'deposit_amount' => 'decimal:2',
+        'final_price' => 'decimal:2',
     ];
 
     /*
@@ -45,5 +48,10 @@ class BookingService extends Model
     public function staff(): BelongsTo
     {
         return $this->belongsTo(Staff::class);
+    }
+
+    public function getEffectivePriceAttribute(): float
+    {
+        return (float) ($this->final_price ?? $this->price);
     }
 }

@@ -50,57 +50,38 @@ class PaymentService
     |--------------------------------------------------------------------------
     */
 
+
     public function createRemainingPayment(
         Booking $booking,
                 $client
     ): Payment {
-        if ((int) $booking->client_id !== (int) $client->id) {
+        if (!$client || (int) $booking->client_id !== (int) $client->id) {
             throw new RuntimeException(
                 'Booking does not belong to this client.'
             );
         }
 
-        if ($booking->status === 'cancelled') {
-            throw new RuntimeException(
-                'Cancelled booking cannot be paid.'
-            );
-        }
-
-        if ($booking->status === 'completed') {
-            throw new RuntimeException(
-                'Completed booking cannot be paid.'
-            );
-        }
-
-        return DB::transaction(function () use (
-            $booking,
-            $client
-        ) {
-            /*
-            |--------------------------------------------------------------------------
-            | Lock Booking
-            |--------------------------------------------------------------------------
-            */
+        return DB::transaction(function () use ($booking, $client) {
 
             $booking = Booking::query()
-                ->where('id', $booking->id)
+                ->whereKey($booking->id)
                 ->lockForUpdate()
-                ->first();
+                ->firstOrFail();
+            $this->ensureNoUnresolvedPosPayment($booking);
 
-            if (!$booking) {
+            if ((int) $booking->client_id !== (int) $client->id) {
                 throw new RuntimeException(
-                    'Booking not found.'
+                    'Booking does not belong to this client.'
                 );
             }
 
-            /*
-            |--------------------------------------------------------------------------
-            | Calculate Current Remaining Amount
-            |--------------------------------------------------------------------------
-            */
+            if ($booking->status === 'cancelled') {
+                throw new RuntimeException(
+                    'Cancelled booking cannot be paid.'
+                );
+            }
 
-            $remainingAmount =
-                $this->getBookingRemainingAmount($booking);
+            $remainingAmount = $this->getBookingRemainingAmount($booking);
 
             if ($remainingAmount <= 0) {
                 throw new RuntimeException(
@@ -108,56 +89,66 @@ class PaymentService
                 );
             }
 
-            /*
-            |--------------------------------------------------------------------------
-            | Find Existing Pending Remaining Payment
-            |--------------------------------------------------------------------------
-            |
-            | فقط Payment در انتظار پرداخت قابل استفاده مجدد است.
-            | Payment پرداخت‌شده نباید برگردانده شود چون ممکن است
-            | بعداً Refund انجام شده و دوباره مانده ایجاد شده باشد.
-            |
-            */
-
-            $existingPayment = Payment::query()
+            // بررسی تمام پرداخت‌های در انتظار، نه فقط آخرین مورد
+            $pendingPayments = Payment::query()
                 ->where('booking_id', $booking->id)
                 ->where('type', 'remaining')
                 ->where('status', 'pending')
-                ->latest('id')
+                ->orderBy('id')
                 ->lockForUpdate()
-                ->first();
+                ->get();
 
-            /*
-            |--------------------------------------------------------------------------
-            | Update Existing Pending Payment
-            |--------------------------------------------------------------------------
-            |
-            | اگر مانده رزرو از زمان ساخت Payment تغییر کرده باشد،
-            | مبلغ Pending Payment با مانده واقعی فعلی Sync می‌شود.
-            |
-            */
+            // لینک زرین‌پال موجود نباید بازنویسی شود.
+            $hasActiveOnlinePayment = $pendingPayments->contains(
+                fn (Payment $payment) =>
+                    $payment->gateway === 'zarinpal'
+                    && !empty($payment->authority)
+            );
 
+            if ($hasActiveOnlinePayment) {
+                throw new RuntimeException(
+                    'An online payment is already in progress for this booking.'
+                );
+            }
+
+            // اگر بیش از یک پرداخت pending وجود دارد،
+            // بدون تعیین تکلیف آن‌ها پرداخت جدید ایجاد نکن.
+            if ($pendingPayments->count() > 1) {
+                throw new RuntimeException(
+                    'Multiple pending payments exist. Please review them first.'
+                );
+            }
+
+            $existingPayment = $pendingPayments->first();
+            if (!empty($existingPayment->initiation_token)) {
+                throw new RuntimeException(
+                    'An online payment initiation is unresolved.'
+                );
+            }
             if ($existingPayment) {
+                // هیچ پرداخت دارای شناسه درگاه یا تراکنش
+                // نباید به صورت خودکار بازنویسی شود.
+                if (
+                    !empty($existingPayment->authority)
+                    || !empty($existingPayment->transaction_id)
+                    || !empty($existingPayment->reference_number)
+                    || !empty($existingPayment->offline_id)
+                ) {
+                    throw new RuntimeException(
+                        'Existing payment must be reviewed before retrying.'
+                    );
+                }
+
                 $existingPayment->update([
                     'client_id' => $client->id,
                     'amount' => $remainingAmount,
                     'payment_method' => 'online',
                     'gateway' => null,
-                    'transaction_id' => null,
-                    'reference_number' => null,
-                    'authority' => null,
-                    'offline_id' => null,
                     'paid_at' => null,
                 ]);
 
                 return $existingPayment->fresh();
             }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Create New Remaining Payment
-            |--------------------------------------------------------------------------
-            */
 
             return Payment::create([
                 'booking_id' => $booking->id,
@@ -173,8 +164,9 @@ class PaymentService
                 'offline_id' => null,
                 'paid_at' => null,
             ]);
-        });
+        }, 3);
     }
+
 
     /*
     |--------------------------------------------------------------------------
@@ -186,55 +178,114 @@ class PaymentService
         Booking $booking,
                 $client
     ): Payment {
-        if ((int) $booking->client_id !== (int) $client->id) {
+
+        if (
+            !$client ||
+            (int) $booking->client_id !== (int) $client->id
+        ) {
             throw new RuntimeException(
                 'Booking does not belong to this client.'
             );
         }
 
-        if ($booking->status === 'cancelled') {
-            throw new RuntimeException(
-                'Cancelled booking cannot be paid.'
-            );
-        }
+        return DB::transaction(function () use ($booking, $client) {
 
-        if ($booking->status === 'completed') {
-            throw new RuntimeException(
-                'Completed booking cannot be paid.'
-            );
-        }
+            $booking = Booking::query()
+                ->whereKey($booking->id)
+                ->lockForUpdate()
+                ->firstOrFail();
 
-        if ((float) $booking->deposit_amount <= 0) {
-            throw new RuntimeException(
-                'This booking does not require a deposit.'
-            );
-        }
+            $this->ensureNoUnresolvedPosPayment($booking);
 
-        if ($booking->payment_status === 'paid') {
-            throw new RuntimeException(
-                'Booking deposit has already been paid.'
-            );
-        }
+            if ((int) $booking->client_id !== (int) $client->id) {
+                throw new RuntimeException(
+                    'Booking does not belong to this client.'
+                );
+            }
 
-        return DB::transaction(function () use (
-            $booking,
-            $client
-        ) {
-            $existingPayment = Payment::query()
+            if ($booking->status === 'cancelled') {
+                throw new RuntimeException(
+                    'Cancelled booking cannot be paid.'
+                );
+            }
+
+            if ($booking->status === 'completed') {
+                throw new RuntimeException(
+                    'Completed booking cannot be paid.'
+                );
+            }
+
+            $depositAmount = (float) $booking->deposit_amount;
+
+            if ($depositAmount <= 0) {
+                throw new RuntimeException(
+                    'This booking does not require a deposit.'
+                );
+            }
+
+            $depositPayments = Payment::query()
                 ->where('booking_id', $booking->id)
                 ->where('type', 'deposit')
                 ->whereIn('status', ['pending', 'paid'])
-                ->latest('id')
-                ->first();
+                ->orderBy('id')
+                ->lockForUpdate()
+                ->get();
+
+            if (
+                $depositPayments->contains(
+                    fn (Payment $payment) => $payment->status === 'paid'
+                )
+            ) {
+                throw new RuntimeException(
+                    'Booking deposit has already been paid.'
+                );
+            }
+
+            $pendingPayments = $depositPayments
+                ->where('status', 'pending');
+
+            if ($pendingPayments->count() > 1) {
+                throw new RuntimeException(
+                    'Multiple pending deposit payments require review.'
+                );
+            }
+
+            $existingPayment = $pendingPayments->first();
 
             if ($existingPayment) {
-                return $existingPayment;
+
+                if (!empty($existingPayment->initiation_token)) {
+                    throw new RuntimeException(
+                        'Deposit payment initiation is unresolved.'
+                    );
+                }
+
+                if (
+                    !empty($existingPayment->authority) ||
+                    !empty($existingPayment->transaction_id) ||
+                    !empty($existingPayment->reference_number) ||
+                    !empty($existingPayment->offline_id)
+                ) {
+                    throw new RuntimeException(
+                        'Existing deposit payment requires review.'
+                    );
+                }
+
+                $existingPayment->update([
+                    'client_id' => $client->id,
+                    'amount' => $depositAmount,
+                    'payment_method' => 'online',
+                    'gateway' => null,
+                    'paid_at' => null,
+                ]);
+
+                return $existingPayment->fresh();
             }
 
             return Payment::create([
                 'booking_id' => $booking->id,
                 'client_id' => $client->id,
-                'amount' => $booking->deposit_amount,
+                'amount' => $depositAmount,
                 'type' => 'deposit',
                 'payment_method' => 'online',
                 'status' => 'pending',
@@ -245,7 +296,8 @@ class PaymentService
                 'offline_id' => null,
                 'paid_at' => null,
             ]);
-        });
+
+        }, 3);
     }
 
     /*
@@ -253,6 +305,7 @@ class PaymentService
     | Mark Deposit As Paid
     |--------------------------------------------------------------------------
     */
+
 
     public function markDepositAsPaid(
         Payment $payment,
@@ -262,85 +315,20 @@ class PaymentService
         ?int $createdBy = null
     ): Payment {
 
-        /*
-        |--------------------------------------------------------------------------
-        | Validate Payment Type
-        |--------------------------------------------------------------------------
-        */
-
-        if ($payment->type !== 'deposit') {
-            throw new RuntimeException(
-                'This payment is not a deposit payment.'
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Validate Status
-        |--------------------------------------------------------------------------
-        */
-
-        if ($payment->status === 'paid') {
-            return $payment->fresh();
-        }
-
-        if ($payment->status !== 'pending') {
-            throw new RuntimeException(
-                'This payment cannot be marked as paid.'
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Validate Gateway
-        |--------------------------------------------------------------------------
-        */
-
         $gateway = trim($gateway);
-
-        if ($gateway === '') {
-            throw new RuntimeException(
-                'Payment gateway is required.'
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Validate Transaction ID
-        |--------------------------------------------------------------------------
-        */
-
         $transactionId = trim($transactionId);
 
-        if ($transactionId === '') {
+        if ($gateway === '' || $transactionId === '') {
             throw new RuntimeException(
-                'Transaction ID is required.'
+                'Gateway and transaction ID are required.'
             );
         }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Validate Amount
-        |--------------------------------------------------------------------------
-        */
 
         if ($verifiedAmount <= 0) {
             throw new RuntimeException(
-                'Verified payment amount must be greater than zero.'
+                'Verified amount must be greater than zero.'
             );
         }
-
-        if ((float) $payment->amount !== $verifiedAmount) {
-            throw new RuntimeException(
-                'Verified payment amount does not match the payment amount.'
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Transaction
-        |--------------------------------------------------------------------------
-        */
 
         return DB::transaction(function () use (
             $payment,
@@ -352,42 +340,36 @@ class PaymentService
 
             /*
             |--------------------------------------------------------------------------
-            | Lock Payment
+            | Lock Booking First
+            |--------------------------------------------------------------------------
+            */
+
+            $booking = Booking::query()
+                ->whereKey($payment->booking_id)
+                ->lockForUpdate()
+                ->first();
+
+            if (!$booking) {
+                throw new RuntimeException('Booking not found.');
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Lock Payment Second
             |--------------------------------------------------------------------------
             */
 
             $payment = Payment::query()
-                ->where('id', $payment->id)
+                ->whereKey($payment->id)
                 ->lockForUpdate()
                 ->first();
 
-            if (!$payment) {
-                throw new RuntimeException(
-                    'Payment not found.'
-                );
+            if (
+                !$payment ||
+                (int) $payment->booking_id !== (int) $booking->id
+            ) {
+                throw new RuntimeException('Payment not found.');
             }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Recheck Status
-            |--------------------------------------------------------------------------
-            */
-
-            if ($payment->status === 'paid') {
-                return $payment->fresh();
-            }
-
-            if ($payment->status !== 'pending') {
-                throw new RuntimeException(
-                    'This payment cannot be marked as paid.'
-                );
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Recheck Payment Type
-            |--------------------------------------------------------------------------
-            */
 
             if ($payment->type !== 'deposit') {
                 throw new RuntimeException(
@@ -397,13 +379,95 @@ class PaymentService
 
             /*
             |--------------------------------------------------------------------------
-            | Recheck Amount
+            | Idempotency
             |--------------------------------------------------------------------------
             */
 
-            if ((float) $payment->amount !== $verifiedAmount) {
+            if ($payment->status === 'paid') {
+                if (
+                    $payment->gateway !== $gateway ||
+                    $payment->transaction_id !== $transactionId
+                ) {
+                    throw new RuntimeException(
+                        'Payment was already completed with another transaction.'
+                    );
+                }
+
+                return $payment->fresh();
+            }
+
+            if ($payment->status !== 'pending') {
                 throw new RuntimeException(
-                    'Verified payment amount does not match the payment amount.'
+                    'This payment cannot be marked as paid.'
+                );
+            }
+
+            if (
+                $payment->gateway !== $gateway ||
+                empty($payment->authority)
+            ) {
+                throw new RuntimeException(
+                    'Payment gateway information is invalid.'
+                );
+            }
+            if (!empty($payment->initiation_token)) {
+                throw new RuntimeException(
+                    'Payment initiation has not been completed.'
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Validate Verified Amount
+            |--------------------------------------------------------------------------
+            */
+
+            if (
+                abs((float) $payment->amount - $verifiedAmount) > 0.001
+            ) {
+                throw new RuntimeException(
+                    'Verified amount does not match payment amount.'
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Validate Booking Financial State
+            |--------------------------------------------------------------------------
+            */
+
+            if ($booking->status === 'cancelled') {
+                throw new RuntimeException(
+                    'Cancelled booking cannot be paid.'
+                );
+            }
+
+            $remainingAmount = $this->getBookingRemainingAmount($booking);
+
+            if (
+                $remainingAmount <= 0 ||
+                (float) $payment->amount > $remainingAmount + 0.001
+            ) {
+                throw new RuntimeException(
+                    'Deposit exceeds the current outstanding balance.'
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Prevent Duplicate Transaction
+            |--------------------------------------------------------------------------
+            */
+
+            $duplicate = Payment::query()
+                ->where('gateway', $gateway)
+                ->where('transaction_id', $transactionId)
+                ->where('id', '!=', $payment->id)
+                ->exists();
+
+            if ($duplicate) {
+                throw new RuntimeException(
+                    'Transaction ID has already been registered.'
                 );
             }
 
@@ -428,6 +492,7 @@ class PaymentService
             */
 
             $payment->update([
+                'payment_method' => 'online',
                 'status' => 'paid',
                 'gateway' => $gateway,
                 'transaction_id' => $transactionId,
@@ -447,144 +512,87 @@ class PaymentService
                 ->first();
 
             if (!$accountingTransaction) {
-
                 $accountingTransaction = AccountingTransaction::create([
                     'client_id' => $payment->client_id,
                     'booking_id' => $payment->booking_id,
                     'payment_id' => $payment->id,
-
                     'type' => 'income',
                     'category' => 'service_payment',
-
-                    'payment_method' => $payment->payment_method,
-
+                    'payment_method' => 'online',
                     'amount' => $payment->amount,
-
                     'reference_number' => $payment->reference_number,
-
                     'description' => 'Service payment - deposit',
-
                     'transaction_date' => $payment->paid_at ?? now(),
-
                     'status' => 'completed',
-
                     'offline_id' => null,
                     'synced_at' => null,
-
                     'created_by' => $createdBy,
                 ]);
             }
 
             /*
             |--------------------------------------------------------------------------
-            | Sync Cash Register
+            | Cash Register
             |--------------------------------------------------------------------------
-            |
-            | اگر روش پرداخت cash باشد وارد صندوق می‌شود.
-            | پرداخت آنلاین روی صندوق نقدی اثری ندارد.
-            |
             */
 
-            $this->syncCashRegister(
-                $accountingTransaction
-            );
+            $this->syncCashRegister($accountingTransaction);
 
             /*
             |--------------------------------------------------------------------------
-            | Get & Lock Booking
+            | Recalculate Booking
             |--------------------------------------------------------------------------
             */
 
-            $booking = $payment->booking()
-                ->lockForUpdate()
-                ->first();
-
-            if (!$booking) {
-                throw new RuntimeException(
-                    'Booking not found.'
-                );
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Recalculate Booking Financial Status
-            |--------------------------------------------------------------------------
-            */
-
-            $this->recalculateBookingFinancialStatus(
-                $booking
-            );
-
-            /*
-            |--------------------------------------------------------------------------
-            | Refresh Payment
-            |--------------------------------------------------------------------------
-            */
+            $this->recalculateBookingFinancialStatus($booking);
 
             $payment->refresh();
-            /*
-|--------------------------------------------------------------------------
-| Payment Success Notification
-|--------------------------------------------------------------------------
-*/
-
-            $this->createPaymentSuccessNotification(
-                $payment
-            );
 
             /*
             |--------------------------------------------------------------------------
-            | Create Audit Log
+            | Payment Success Notification
+            |--------------------------------------------------------------------------
+            */
+
+            $this->createPaymentSuccessNotification($payment);
+
+            /*
+            |--------------------------------------------------------------------------
+            | Audit Log
             |--------------------------------------------------------------------------
             */
 
             app(AccountingAuditService::class)->log(
                 action: 'payment_paid',
-
                 entityType: 'payment',
-
                 entityId: $payment->id,
-
                 bookingId: $payment->booking_id,
-
                 clientId: $payment->client_id,
-
                 description: 'Deposit payment paid online',
-
                 oldValues: $oldValues,
-
                 newValues: [
                     'status' => $payment->status,
-
                     'payment_method' => $payment->payment_method,
-
                     'gateway' => $payment->gateway,
-
                     'transaction_id' => $payment->transaction_id,
-
                     'paid_at' => $payment->paid_at?->toDateTimeString(),
-
                     'amount' => (float) $payment->amount,
                 ],
-
                 userId: $createdBy
             );
 
-            /*
-            |--------------------------------------------------------------------------
-            | Return Payment
-            |--------------------------------------------------------------------------
-            */
-
             return $payment->fresh();
-        });
+
+        }, 3);
     }
+
 
     /*
     |--------------------------------------------------------------------------
     | Mark Remaining As Paid
     |--------------------------------------------------------------------------
     */
+
 
     public function markRemainingAsPaid(
         Payment $payment,
@@ -594,85 +602,20 @@ class PaymentService
         ?int $createdBy = null
     ): Payment {
 
-        /*
-        |--------------------------------------------------------------------------
-        | Validate Payment Type
-        |--------------------------------------------------------------------------
-        */
-
-        if ($payment->type !== 'remaining') {
-            throw new RuntimeException(
-                'This payment is not a remaining payment.'
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Validate Status
-        |--------------------------------------------------------------------------
-        */
-
-        if ($payment->status === 'paid') {
-            return $payment->fresh();
-        }
-
-        if ($payment->status !== 'pending') {
-            throw new RuntimeException(
-                'This payment cannot be marked as paid.'
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Validate Gateway
-        |--------------------------------------------------------------------------
-        */
-
         $gateway = trim($gateway);
-
-        if ($gateway === '') {
-            throw new RuntimeException(
-                'Payment gateway is required.'
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Validate Transaction ID
-        |--------------------------------------------------------------------------
-        */
-
         $transactionId = trim($transactionId);
 
-        if ($transactionId === '') {
+        if ($gateway === '' || $transactionId === '') {
             throw new RuntimeException(
-                'Transaction ID is required.'
+                'Gateway and transaction ID are required.'
             );
         }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Validate Amount
-        |--------------------------------------------------------------------------
-        */
 
         if ($verifiedAmount <= 0) {
             throw new RuntimeException(
-                'Verified payment amount must be greater than zero.'
+                'Verified amount must be greater than zero.'
             );
         }
-
-        if ((float) $payment->amount !== $verifiedAmount) {
-            throw new RuntimeException(
-                'Verified payment amount does not match the payment amount.'
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Transaction
-        |--------------------------------------------------------------------------
-        */
 
         return DB::transaction(function () use (
             $payment,
@@ -684,26 +627,33 @@ class PaymentService
 
             /*
             |--------------------------------------------------------------------------
-            | Lock Payment
+            | Lock Booking First
             |--------------------------------------------------------------------------
             */
 
-            $payment = Payment::query()
-                ->where('id', $payment->id)
+            $booking = Booking::query()
+                ->whereKey($payment->booking_id)
                 ->lockForUpdate()
                 ->first();
 
-            if (!$payment) {
-                throw new RuntimeException(
-                    'Payment not found.'
-                );
+            if (!$booking) {
+                throw new RuntimeException('Booking not found.');
             }
 
             /*
             |--------------------------------------------------------------------------
-            | Recheck Payment Type
+            | Lock Payment Second
             |--------------------------------------------------------------------------
             */
+
+            $payment = Payment::query()
+                ->whereKey($payment->id)
+                ->lockForUpdate()
+                ->first();
+
+            if (!$payment || (int) $payment->booking_id !== (int) $booking->id) {
+                throw new RuntimeException('Payment not found.');
+            }
 
             if ($payment->type !== 'remaining') {
                 throw new RuntimeException(
@@ -713,11 +663,20 @@ class PaymentService
 
             /*
             |--------------------------------------------------------------------------
-            | Recheck Status
+            | Idempotency
             |--------------------------------------------------------------------------
             */
 
             if ($payment->status === 'paid') {
+                if (
+                    $payment->gateway !== $gateway ||
+                    $payment->transaction_id !== $transactionId
+                ) {
+                    throw new RuntimeException(
+                        'Payment has already been completed with another transaction.'
+                    );
+                }
+
                 return $payment->fresh();
             }
 
@@ -727,21 +686,77 @@ class PaymentService
                 );
             }
 
-            /*
-            |--------------------------------------------------------------------------
-            | Recheck Amount
-            |--------------------------------------------------------------------------
-            */
-
-            if ((float) $payment->amount !== $verifiedAmount) {
+            if (
+                $payment->gateway !== $gateway ||
+                empty($payment->authority)
+            ) {
                 throw new RuntimeException(
-                    'Verified payment amount does not match the payment amount.'
+                    'Payment gateway information is invalid.'
                 );
             }
 
             /*
             |--------------------------------------------------------------------------
-            | Store Old Values For Audit
+            | Validate Amount
+            |--------------------------------------------------------------------------
+            */
+
+            if (abs((float) $payment->amount - $verifiedAmount) > 0.001) {
+                throw new RuntimeException(
+                    'Verified amount does not match payment amount.'
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Prevent Duplicate Transaction
+            |--------------------------------------------------------------------------
+            */
+
+            $duplicate = Payment::query()
+                ->where('gateway', $gateway)
+                ->where('transaction_id', $transactionId)
+                ->where('id', '!=', $payment->id)
+                ->exists();
+
+            if ($duplicate) {
+                throw new RuntimeException(
+                    'Transaction ID has already been registered.'
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Validate Booking
+            |--------------------------------------------------------------------------
+            */
+
+            if ($booking->status === 'cancelled') {
+                throw new RuntimeException(
+                    'Cancelled booking cannot be paid.'
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Verify Current Balance
+            |--------------------------------------------------------------------------
+            */
+
+            $remainingAmount = $this->getBookingRemainingAmount($booking);
+
+            if (
+                $remainingAmount <= 0 ||
+                abs((float) $payment->amount - $remainingAmount) > 0.001
+            ) {
+                throw new RuntimeException(
+                    'Payment amount does not match the current booking balance.'
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Audit Old Values
             |--------------------------------------------------------------------------
             */
 
@@ -755,11 +770,12 @@ class PaymentService
 
             /*
             |--------------------------------------------------------------------------
-            | Mark Payment As Paid
+            | Mark Payment Paid
             |--------------------------------------------------------------------------
             */
 
             $payment->update([
+                'payment_method' => 'online',
                 'status' => 'paid',
                 'gateway' => $gateway,
                 'transaction_id' => $transactionId,
@@ -768,7 +784,7 @@ class PaymentService
 
             /*
             |--------------------------------------------------------------------------
-            | Create Accounting Transaction
+            | Accounting Transaction
             |--------------------------------------------------------------------------
             */
 
@@ -779,575 +795,81 @@ class PaymentService
                 ->first();
 
             if (!$accountingTransaction) {
-
                 $accountingTransaction = AccountingTransaction::create([
                     'client_id' => $payment->client_id,
                     'booking_id' => $payment->booking_id,
                     'payment_id' => $payment->id,
-
                     'type' => 'income',
                     'category' => 'service_payment',
-
-                    'payment_method' => $payment->payment_method,
-
+                    'payment_method' => 'online',
                     'amount' => $payment->amount,
-
                     'reference_number' => $payment->reference_number,
-
                     'description' => 'Service payment - remaining',
-
                     'transaction_date' => $payment->paid_at ?? now(),
-
                     'status' => 'completed',
-
                     'offline_id' => null,
                     'synced_at' => null,
-
                     'created_by' => $createdBy,
                 ]);
             }
 
-            /*
-            |--------------------------------------------------------------------------
-            | Sync Cash Register
-            |--------------------------------------------------------------------------
-            */
+            $this->syncCashRegister($accountingTransaction);
 
-            $this->syncCashRegister(
-                $accountingTransaction
-            );
-
-            /*
-            |--------------------------------------------------------------------------
-            | Get & Lock Booking
-            |--------------------------------------------------------------------------
-            */
-
-            $booking = $payment->booking()
-                ->lockForUpdate()
-                ->first();
-
-            if (!$booking) {
-                throw new RuntimeException(
-                    'Booking not found.'
-                );
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Recalculate Booking Financial Status
-            |--------------------------------------------------------------------------
-            */
-
-            $this->recalculateBookingFinancialStatus(
-                $booking
-            );
-
-            /*
-            |--------------------------------------------------------------------------
-            | Refresh Payment
-            |--------------------------------------------------------------------------
-            */
+            $this->recalculateBookingFinancialStatus($booking);
 
             $payment->refresh();
 
-            /*
-|--------------------------------------------------------------------------
-| Payment Success Notification
-|--------------------------------------------------------------------------
-*/
-
-            $this->createPaymentSuccessNotification(
-                $payment
-            );
-            /*
-            |--------------------------------------------------------------------------
-            | Create Audit Log
-            |--------------------------------------------------------------------------
-            */
+            $this->createPaymentSuccessNotification($payment);
 
             app(AccountingAuditService::class)->log(
                 action: 'payment_paid',
-
                 entityType: 'payment',
-
                 entityId: $payment->id,
-
                 bookingId: $payment->booking_id,
-
                 clientId: $payment->client_id,
-
                 description: 'Remaining payment paid online',
-
                 oldValues: $oldValues,
-
                 newValues: [
                     'status' => $payment->status,
-
                     'payment_method' => $payment->payment_method,
-
                     'gateway' => $payment->gateway,
-
                     'transaction_id' => $payment->transaction_id,
-
                     'paid_at' => $payment->paid_at?->toDateTimeString(),
-
                     'amount' => (float) $payment->amount,
                 ],
-
                 userId: $createdBy
             );
 
-            /*
-            |--------------------------------------------------------------------------
-            | Return Payment
-            |--------------------------------------------------------------------------
-            */
-
             return $payment->fresh();
-        });
+
+        }, 3);
     }
+
     /*
  |--------------------------------------------------------------------------
  | Mark Payment As Paid By POS
  |--------------------------------------------------------------------------
  */
 
+    /**
+     * Legacy POS payment method.
+     *
+     * @deprecated Use PosPaymentService::markAsPaidManually() instead.
+     *
+     * This method is intentionally disabled to prevent
+     * bypassing POS terminal validation, payment checks,
+     * idempotency protection, and accounting safeguards.
+     */
     public function markAsPaidByPos(
         Payment $payment,
         string $referenceNumber,
         ?int $createdBy = null,
         ?string $offlineId = null
     ): Payment {
-
-        /*
-        |--------------------------------------------------------------------------
-        | Validate Payment Type
-        |--------------------------------------------------------------------------
-        */
-
-        if (!in_array(
-            $payment->type,
-            ['deposit', 'remaining'],
-            true
-        )) {
-            throw new RuntimeException(
-                'Only deposit or remaining payments can be paid by POS.'
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Validate Status
-        |--------------------------------------------------------------------------
-        */
-
-        if ($payment->status === 'paid') {
-            return $payment->fresh();
-        }
-
-        if ($payment->status !== 'pending') {
-            throw new RuntimeException(
-                'This payment cannot be paid by POS.'
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Validate Reference Number
-        |--------------------------------------------------------------------------
-        */
-
-        $referenceNumber = trim($referenceNumber);
-
-        if ($referenceNumber === '') {
-            throw new RuntimeException(
-                'POS reference number is required.'
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Normalize Offline ID
-        |--------------------------------------------------------------------------
-        */
-
-        if ($offlineId !== null) {
-
-            $offlineId = trim($offlineId);
-
-            if ($offlineId === '') {
-                $offlineId = null;
-            }
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Transaction
-        |--------------------------------------------------------------------------
-        */
-
-        return DB::transaction(function () use (
-            $payment,
-            $referenceNumber,
-            $createdBy,
-            $offlineId
-        ) {
-
-            /*
-            |--------------------------------------------------------------------------
-            | Lock Payment
-            |--------------------------------------------------------------------------
-            */
-
-            $payment = Payment::query()
-                ->where('id', $payment->id)
-                ->lockForUpdate()
-                ->first();
-
-            if (!$payment) {
-                throw new RuntimeException(
-                    'Payment not found.'
-                );
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Recheck Payment Type
-            |--------------------------------------------------------------------------
-            */
-
-            if (!in_array(
-                $payment->type,
-                ['deposit', 'remaining'],
-                true
-            )) {
-                throw new RuntimeException(
-                    'Only deposit or remaining payments can be paid by POS.'
-                );
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Already Paid
-            |--------------------------------------------------------------------------
-            */
-
-            if ($payment->status === 'paid') {
-
-                /*
-                 * اگر همان عملیات آفلاین قبلاً روی همین Payment
-                 * ثبت شده باشد، همان Payment برگردانده می‌شود.
-                 */
-
-                if (
-                    $offlineId !== null &&
-                    $payment->offline_id === $offlineId
-                ) {
-                    return $payment->fresh();
-                }
-
-                return $payment->fresh();
-            }
-
-            if ($payment->status !== 'pending') {
-                throw new RuntimeException(
-                    'This payment cannot be paid by POS.'
-                );
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Prevent Duplicate Offline Payment
-            |--------------------------------------------------------------------------
-            */
-
-            if ($offlineId !== null) {
-
-                $duplicateOfflinePayment = Payment::query()
-                    ->where('offline_id', $offlineId)
-                    ->where('id', '!=', $payment->id)
-                    ->first();
-
-                if ($duplicateOfflinePayment) {
-                    throw new RuntimeException(
-                        'This offline payment has already been synced.'
-                    );
-                }
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Prevent Duplicate POS Reference
-            |--------------------------------------------------------------------------
-            */
-
-            $duplicateReference = Payment::query()
-                ->where('payment_method', 'pos')
-                ->where('reference_number', $referenceNumber)
-                ->where('status', 'paid')
-                ->where('id', '!=', $payment->id)
-                ->exists();
-
-            if ($duplicateReference) {
-                throw new RuntimeException(
-                    'This POS reference number has already been used.'
-                );
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Store Old Values For Audit
-            |--------------------------------------------------------------------------
-            */
-
-            $oldValues = [
-                'status' => $payment->status,
-
-                'payment_method' =>
-                    $payment->payment_method,
-
-                'reference_number' =>
-                    $payment->reference_number,
-
-                'offline_id' =>
-                    $payment->offline_id,
-
-                'paid_at' =>
-                    $payment->paid_at?->toDateTimeString(),
-            ];
-
-            /*
-            |--------------------------------------------------------------------------
-            | Mark Payment As Paid
-            |--------------------------------------------------------------------------
-            */
-
-            $payment->update([
-                'payment_method' => 'pos',
-
-                'status' => 'paid',
-
-                /*
-                 * کارتخوان Gateway آنلاین ندارد.
-                 */
-                'gateway' => null,
-
-                /*
-                 * Transaction ID مربوط به Gateway آنلاین است.
-                 */
-                'transaction_id' => null,
-
-                /*
-                 * شماره پیگیری کارتخوان
-                 */
-                'reference_number' => $referenceNumber,
-
-                'authority' => null,
-
-                /*
-                 * اگر عملیات از PWA آفلاین آمده باشد
-                 * UUID آن اینجا ذخیره می‌شود.
-                 */
-                'offline_id' => $offlineId,
-
-                'paid_at' => now(),
-            ]);
-
-            /*
-            |--------------------------------------------------------------------------
-            | Create / Find Accounting Transaction
-            |--------------------------------------------------------------------------
-            */
-
-            $accountingTransaction =
-                AccountingTransaction::query()
-                    ->where(
-                        'payment_id',
-                        $payment->id
-                    )
-                    ->where(
-                        'type',
-                        'income'
-                    )
-                    ->lockForUpdate()
-                    ->first();
-
-            if (!$accountingTransaction) {
-
-                $description =
-                    $payment->type === 'deposit'
-                        ? 'Service payment - deposit via POS'
-                        : 'Service payment - remaining via POS';
-
-                $accountingTransaction =
-                    AccountingTransaction::create([
-
-                        'client_id' =>
-                            $payment->client_id,
-
-                        'booking_id' =>
-                            $payment->booking_id,
-
-                        'payment_id' =>
-                            $payment->id,
-
-                        'type' =>
-                            'income',
-
-                        'category' =>
-                            'service_payment',
-
-                        'payment_method' =>
-                            'pos',
-
-                        'amount' =>
-                            $payment->amount,
-
-                        'reference_number' =>
-                            $referenceNumber,
-
-                        'description' =>
-                            $description,
-
-                        'transaction_date' =>
-                            $payment->paid_at ?? now(),
-
-                        'status' =>
-                            'completed',
-
-                        /*
-                         * اتصال تراکنش حسابداری
-                         * به عملیات Offline PWA
-                         */
-                        'offline_id' =>
-                            $offlineId,
-
-                        /*
-                         * اگر offline_id داریم یعنی
-                         * عملیات آفلاین به سرور Sync شده.
-                         */
-                        'synced_at' =>
-                            $offlineId !== null
-                                ? now()
-                                : null,
-
-                        'created_by' =>
-                            $createdBy,
-                    ]);
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | IMPORTANT
-            | POS does NOT enter Cash Register
-            |--------------------------------------------------------------------------
-            |
-            | پرداخت POS موجودی نقدی صندوق را تغییر نمی‌دهد.
-            |
-            */
-
-            /*
-            |--------------------------------------------------------------------------
-            | Get Booking
-            |--------------------------------------------------------------------------
-            */
-
-            $booking = $payment->booking()
-                ->lockForUpdate()
-                ->first();
-
-            if (!$booking) {
-                throw new RuntimeException(
-                    'Booking not found.'
-                );
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Recalculate Booking Financial Status
-            |--------------------------------------------------------------------------
-            */
-
-            $this->recalculateBookingFinancialStatus(
-                $booking
-            );
-
-            /*
-            |--------------------------------------------------------------------------
-            | Refresh Payment
-            |--------------------------------------------------------------------------
-            */
-
-            $payment->refresh();
-            /*
-|--------------------------------------------------------------------------
-| Payment Success Notification
-|--------------------------------------------------------------------------
-*/
-
-            $this->createPaymentSuccessNotification(
-                $payment
-            );
-
-            /*
-            |--------------------------------------------------------------------------
-            | Create Audit Log
-            |--------------------------------------------------------------------------
-            */
-
-            app(AccountingAuditService::class)->log(
-
-                action: 'payment_paid',
-
-                entityType: 'payment',
-
-                entityId: $payment->id,
-
-                bookingId: $payment->booking_id,
-
-                clientId: $payment->client_id,
-
-                description:
-                $payment->type === 'deposit'
-                    ? 'Deposit payment paid via POS'
-                    : 'Remaining payment paid via POS',
-
-                oldValues: $oldValues,
-
-                newValues: [
-
-                    'status' =>
-                        $payment->status,
-
-                    'payment_method' =>
-                        $payment->payment_method,
-
-                    'reference_number' =>
-                        $payment->reference_number,
-
-                    'offline_id' =>
-                        $payment->offline_id,
-
-                    'paid_at' =>
-                        $payment->paid_at
-                            ?->toDateTimeString(),
-
-                    'amount' =>
-                        (float) $payment->amount,
-                ],
-
-                userId: $createdBy
-            );
-
-            /*
-            |--------------------------------------------------------------------------
-            | Return Payment
-            |--------------------------------------------------------------------------
-            */
-
-            return $payment->fresh();
-        });
+        throw new \RuntimeException(
+            'Legacy POS payment method is disabled. '
+            . 'Use PosPaymentService::markAsPaidManually() instead.'
+        );
     }
     /*
 |--------------------------------------------------------------------------
@@ -1355,64 +877,18 @@ class PaymentService
 |--------------------------------------------------------------------------
 */
 
+
     public function markAsPaidByCash(
         Payment $payment,
         ?int $createdBy = null,
         ?string $offlineId = null
     ): Payment {
 
-        /*
-        |--------------------------------------------------------------------------
-        | Validate Payment Type
-        |--------------------------------------------------------------------------
-        */
+        $offlineId = $offlineId !== null
+            ? trim($offlineId)
+            : null;
 
-        if (!in_array(
-            $payment->type,
-            ['deposit', 'remaining'],
-            true
-        )) {
-            throw new RuntimeException(
-                'Only deposit or remaining payments can be paid by cash.'
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Validate Status
-        |--------------------------------------------------------------------------
-        */
-
-        if ($payment->status === 'paid') {
-            return $payment->fresh();
-        }
-
-        if ($payment->status !== 'pending') {
-            throw new RuntimeException(
-                'This payment cannot be paid by cash.'
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Normalize Offline ID
-        |--------------------------------------------------------------------------
-        */
-
-        if ($offlineId !== null) {
-
-            $offlineId = trim($offlineId);
-
-            if ($offlineId === '') {
-                $offlineId = null;
-            }
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Transaction
-        |--------------------------------------------------------------------------
-        */
+        $offlineId = $offlineId === '' ? null : $offlineId;
 
         return DB::transaction(function () use (
             $payment,
@@ -1422,50 +898,51 @@ class PaymentService
 
             /*
             |--------------------------------------------------------------------------
-            | Lock Payment
+            | Lock Booking First
             |--------------------------------------------------------------------------
             */
 
-            $payment = Payment::query()
-                ->where('id', $payment->id)
+            $booking = Booking::query()
+                ->whereKey($payment->booking_id)
                 ->lockForUpdate()
                 ->first();
 
-            if (!$payment) {
-                throw new RuntimeException(
-                    'Payment not found.'
-                );
+            if (!$booking) {
+                throw new RuntimeException('Booking not found.');
             }
 
             /*
             |--------------------------------------------------------------------------
-            | Recheck Payment Type
+            | Lock Payment Second
             |--------------------------------------------------------------------------
             */
 
-            if (!in_array(
-                $payment->type,
-                ['deposit', 'remaining'],
-                true
-            )) {
+            $payment = Payment::query()
+                ->whereKey($payment->id)
+                ->lockForUpdate()
+                ->first();
+
+            if (!$payment || (int) $payment->booking_id !== (int) $booking->id) {
+                throw new RuntimeException('Payment not found.');
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Validate Payment
+            |--------------------------------------------------------------------------
+            */
+
+            if (!in_array($payment->type, ['deposit', 'remaining'], true)) {
                 throw new RuntimeException(
                     'Only deposit or remaining payments can be paid by cash.'
                 );
             }
 
-            /*
-            |--------------------------------------------------------------------------
-            | Already Paid
-            |--------------------------------------------------------------------------
-            */
-
             if ($payment->status === 'paid') {
-
-                if (
-                    $offlineId !== null &&
-                    $payment->offline_id === $offlineId
-                ) {
-                    return $payment->fresh();
+                if ($payment->payment_method !== 'cash') {
+                    throw new RuntimeException(
+                        'This payment was already paid using another method.'
+                    );
                 }
 
                 return $payment->fresh();
@@ -1477,6 +954,79 @@ class PaymentService
                 );
             }
 
+            if ($booking->status === 'cancelled') {
+                throw new RuntimeException(
+                    'Cancelled booking cannot be paid.'
+                );
+            }
+
+            /*
+|--------------------------------------------------------------------------
+| Prevent Unresolved Online Initiation
+|--------------------------------------------------------------------------
+*/
+
+            $unresolvedInitiation = Payment::query()
+                ->where('booking_id', $booking->id)
+                ->where('status', 'pending')
+                ->whereNotNull('initiation_token')
+                ->exists();
+
+            if ($unresolvedInitiation) {
+                throw new RuntimeException(
+                    'An online payment initiation is unresolved. Cash settlement is blocked.'
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Prevent Active Gateway Payment
+            |--------------------------------------------------------------------------
+            */
+
+            $activeOnlinePayment = Payment::query()
+                ->where('booking_id', $booking->id)
+                ->where('status', 'pending')
+                ->where('gateway', 'zarinpal')
+                ->whereNotNull('authority')
+                ->lockForUpdate()
+                ->exists();
+
+            if ($activeOnlinePayment) {
+                throw new RuntimeException(
+                    'An online payment is in progress. Resolve it before cash settlement.'
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Validate Current Remaining Amount
+            |--------------------------------------------------------------------------
+            */
+
+            $remainingAmount = $this->getBookingRemainingAmount($booking);
+
+            if ($remainingAmount <= 0) {
+                throw new RuntimeException(
+                    'This booking has no remaining balance.'
+                );
+            }
+
+            if ($payment->type === 'remaining') {
+                if (abs((float) $payment->amount - $remainingAmount) > 0.001) {
+                    throw new RuntimeException(
+                        'Payment amount does not match the current remaining balance.'
+                    );
+                }
+            }
+            if (
+                $payment->type === 'deposit' &&
+                (float) $payment->amount > $remainingAmount + 0.001
+            ) {
+                throw new RuntimeException(
+                    'Deposit amount exceeds the current outstanding balance.'
+                );
+            }
             /*
             |--------------------------------------------------------------------------
             | Prevent Duplicate Offline Payment
@@ -1484,13 +1034,12 @@ class PaymentService
             */
 
             if ($offlineId !== null) {
-
-                $duplicateOfflinePayment = Payment::query()
+                $duplicate = Payment::query()
                     ->where('offline_id', $offlineId)
                     ->where('id', '!=', $payment->id)
-                    ->first();
+                    ->exists();
 
-                if ($duplicateOfflinePayment) {
+                if ($duplicate) {
                     throw new RuntimeException(
                         'This offline payment has already been synced.'
                     );
@@ -1499,7 +1048,7 @@ class PaymentService
 
             /*
             |--------------------------------------------------------------------------
-            | Store Old Values For Audit
+            | Store Old Values
             |--------------------------------------------------------------------------
             */
 
@@ -1512,31 +1061,24 @@ class PaymentService
 
             /*
             |--------------------------------------------------------------------------
-            | Mark Payment As Paid
+            | Mark As Paid
             |--------------------------------------------------------------------------
             */
 
             $payment->update([
                 'payment_method' => 'cash',
-
                 'status' => 'paid',
-
                 'gateway' => null,
-
                 'transaction_id' => null,
-
                 'reference_number' => null,
-
                 'authority' => null,
-
                 'offline_id' => $offlineId,
-
                 'paid_at' => now(),
             ]);
 
             /*
             |--------------------------------------------------------------------------
-            | Create / Find Accounting Transaction
+            | Accounting Transaction
             |--------------------------------------------------------------------------
             */
 
@@ -1547,154 +1089,83 @@ class PaymentService
                 ->first();
 
             if (!$accountingTransaction) {
-
-                $description = $payment->type === 'deposit'
-                    ? 'Service payment - deposit via cash'
-                    : 'Service payment - remaining via cash';
-
                 $accountingTransaction = AccountingTransaction::create([
-
                     'client_id' => $payment->client_id,
-
                     'booking_id' => $payment->booking_id,
-
                     'payment_id' => $payment->id,
-
                     'type' => 'income',
-
                     'category' => 'service_payment',
-
                     'payment_method' => 'cash',
-
                     'amount' => $payment->amount,
-
                     'reference_number' => null,
-
-                    'description' => $description,
-
-                    'transaction_date' =>
-                        $payment->paid_at ?? now(),
-
+                    'description' => $payment->type === 'deposit'
+                        ? 'Service payment - deposit via cash'
+                        : 'Service payment - remaining via cash',
+                    'transaction_date' => $payment->paid_at ?? now(),
                     'status' => 'completed',
-
                     'offline_id' => $offlineId,
-
-                    'synced_at' => $offlineId !== null
-                        ? now()
-                        : null,
-
+                    'synced_at' => $offlineId !== null ? now() : null,
                     'created_by' => $createdBy,
                 ]);
             }
 
             /*
             |--------------------------------------------------------------------------
-            | Sync Cash Register
+            | Cash Register
             |--------------------------------------------------------------------------
-            |
-            | برخلاف POS، پرداخت نقدی باید وارد صندوق شود.
-            |
             */
 
-            $this->syncCashRegister(
-                $accountingTransaction
-            );
+            $this->syncCashRegister($accountingTransaction);
 
             /*
             |--------------------------------------------------------------------------
-            | Get Booking
+            | Recalculate Booking
             |--------------------------------------------------------------------------
             */
 
-            $booking = $payment->booking()
-                ->lockForUpdate()
-                ->first();
-
-            if (!$booking) {
-                throw new RuntimeException(
-                    'Booking not found.'
-                );
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Recalculate Booking Financial Status
-            |--------------------------------------------------------------------------
-            */
-
-            $this->recalculateBookingFinancialStatus(
-                $booking
-            );
-
-            /*
-            |--------------------------------------------------------------------------
-            | Refresh Payment
-            |--------------------------------------------------------------------------
-            */
+            $this->recalculateBookingFinancialStatus($booking);
 
             $payment->refresh();
+
             /*
             |--------------------------------------------------------------------------
-            | Payment Success Notification
+            | Payment Notification
             |--------------------------------------------------------------------------
             */
 
-            $this->createPaymentSuccessNotification(
-                $payment
-            );
+            $this->createPaymentSuccessNotification($payment);
+
             /*
             |--------------------------------------------------------------------------
-            | Create Audit Log
+            | Audit Log
             |--------------------------------------------------------------------------
             */
 
             app(AccountingAuditService::class)->log(
-
                 action: 'payment_paid',
-
                 entityType: 'payment',
-
                 entityId: $payment->id,
-
                 bookingId: $payment->booking_id,
-
                 clientId: $payment->client_id,
-
                 description: $payment->type === 'deposit'
                     ? 'Deposit payment paid via cash'
                     : 'Remaining payment paid via cash',
-
                 oldValues: $oldValues,
-
                 newValues: [
-
                     'status' => $payment->status,
-
-                    'payment_method' =>
-                        $payment->payment_method,
-
-                    'offline_id' =>
-                        $payment->offline_id,
-
-                    'paid_at' =>
-                        $payment->paid_at?->toDateTimeString(),
-
-                    'amount' =>
-                        (float) $payment->amount,
+                    'payment_method' => $payment->payment_method,
+                    'offline_id' => $payment->offline_id,
+                    'paid_at' => $payment->paid_at?->toDateTimeString(),
+                    'amount' => (float) $payment->amount,
                 ],
-
                 userId: $createdBy
             );
 
-            /*
-            |--------------------------------------------------------------------------
-            | Return Payment
-            |--------------------------------------------------------------------------
-            */
-
             return $payment->fresh();
-        });
+
+        }, 3);
     }
+
     /*
     |--------------------------------------------------------------------------
     | Set ZarinPal Authority
@@ -1705,37 +1176,37 @@ class PaymentService
         Payment $payment,
         string $authority
     ): Payment {
-        if (!in_array($payment->type, ['deposit', 'remaining'], true)) {
-            throw new RuntimeException(
-                'Only deposit or remaining payments can receive an authority.'
-            );
-        }
 
+        $authority = trim($authority);
 
-        if ($payment->status !== 'pending') {
-            throw new RuntimeException(
-                'Only pending payments can receive an authority.'
-            );
-        }
-
-        if (empty(trim($authority))) {
+        if ($authority === '') {
             throw new RuntimeException(
                 'ZarinPal authority is required.'
             );
         }
 
-        return DB::transaction(function () use (
-            $payment,
-            $authority
-        ) {
-            $payment = Payment::query()
-                ->where('id', $payment->id)
-                ->lockForUpdate()
-                ->first();
+        return DB::transaction(function () use ($payment, $authority) {
 
-            if (!$payment) {
+            // Always lock Booking before Payment.
+            $booking = Booking::query()
+                ->whereKey($payment->booking_id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            $payment = Payment::query()
+                ->whereKey($payment->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            if ((int) $payment->booking_id !== (int) $booking->id) {
                 throw new RuntimeException(
-                    'Payment not found.'
+                    'Payment does not belong to this booking.'
+                );
+            }
+
+            if (!in_array($payment->type, ['deposit', 'remaining'], true)) {
+                throw new RuntimeException(
+                    'Invalid payment type.'
                 );
             }
 
@@ -1745,13 +1216,40 @@ class PaymentService
                 );
             }
 
+            // An existing authority must never be overwritten.
+            if (!empty($payment->authority)) {
+
+                if ($payment->authority === $authority
+                    && $payment->gateway === 'zarinpal') {
+                    return $payment->fresh();
+                }
+
+                throw new RuntimeException(
+                    'This payment already has a different authority.'
+                );
+            }
+
+            // Prevent duplicate authority across payments.
+            $duplicate = Payment::query()
+                ->where('authority', $authority)
+                ->where('id', '!=', $payment->id)
+                ->exists();
+
+            if ($duplicate) {
+                throw new RuntimeException(
+                    'This authority is already assigned to another payment.'
+                );
+            }
+
             $payment->update([
-                'authority' => trim($authority),
+                'authority' => $authority,
                 'gateway' => 'zarinpal',
+                'payment_method' => 'online',
             ]);
 
             return $payment->fresh();
-        });
+
+        }, 3);
     }
 
     /*
@@ -2113,6 +1611,619 @@ class PaymentService
         if ($accountingTransaction->type === 'refund') {
             app(CashRegisterService::class)->addRefund(
                 $accountingTransaction
+            );
+        }
+    }
+    public function settleRemainingByCash(
+        Booking $booking,
+        ?int $createdBy = null
+    ): Payment {
+
+        return DB::transaction(function () use ($booking, $createdBy) {
+
+            $booking = Booking::query()
+                ->whereKey($booking->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            if ($booking->status === 'cancelled') {
+                throw new RuntimeException(
+                    'Cancelled bookings cannot be settled.'
+                );
+            }
+
+            $remaining = $this->getBookingRemainingAmount($booking);
+
+            if ($remaining <= 0) {
+                throw new RuntimeException(
+                    'This booking has no remaining balance.'
+                );
+            }
+
+            // هر درخواست شروع پرداخت آنلاین، حتی اگر Authority
+            // هنوز دریافت نشده باشد، نیازمند بررسی است.
+            $unresolvedInitiation = Payment::query()
+                ->where('booking_id', $booking->id)
+                ->where('status', 'pending')
+                ->whereNotNull('initiation_token')
+                ->exists();
+
+            if ($unresolvedInitiation) {
+                throw new RuntimeException(
+                    'An online payment initiation requires review.'
+                );
+            }
+
+            $activeOnlinePayment = Payment::query()
+                ->where('booking_id', $booking->id)
+                ->where('status', 'pending')
+                ->where('gateway', 'zarinpal')
+                ->whereNotNull('authority')
+                ->exists();
+
+            if ($activeOnlinePayment) {
+                throw new RuntimeException(
+                    'An online payment is in progress.'
+                );
+            }
+
+            if (!$booking->client) {
+                throw new RuntimeException(
+                    'Booking client not found.'
+                );
+            }
+
+            $payment = $this->createRemainingPayment(
+                $booking,
+                $booking->client
+            );
+
+            if (abs((float) $payment->amount - $remaining) > 0.001) {
+                throw new RuntimeException(
+                    'Payment amount does not match remaining balance.'
+                );
+            }
+
+            return $this->markAsPaidByCash(
+                payment: $payment,
+                createdBy: $createdBy
+            );
+
+        }, 3);
+    }
+
+    public function settleRemainingByPos(
+        Booking $booking,
+        int $terminalId,
+        string $referenceNumber,
+        ?int $createdBy = null
+    ): Payment {
+
+        $referenceNumber = trim($referenceNumber);
+
+        if ($referenceNumber === '') {
+            throw new RuntimeException(
+                'POS reference number is required.'
+            );
+        }
+
+        return DB::transaction(function () use (
+            $booking,
+            $terminalId,
+            $referenceNumber,
+            $createdBy
+        ) {
+
+            $booking = Booking::query()
+                ->whereKey($booking->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            if ($booking->status === 'cancelled') {
+                throw new RuntimeException(
+                    'Cancelled bookings cannot be settled.'
+                );
+            }
+
+            $this->ensureNoUnresolvedPosPayment($booking);
+
+            $remaining = $this->getBookingRemainingAmount($booking);
+
+            if ($remaining <= 0) {
+                throw new RuntimeException(
+                    'This booking has no remaining balance.'
+                );
+            }
+
+            if (!$booking->client) {
+                throw new RuntimeException(
+                    'Booking client not found.'
+                );
+            }
+
+            // از منطق موجود برای ایجاد یا بازیابی پرداخت استفاده می‌کنیم.
+            $payment = $this->createRemainingPayment(
+                $booking,
+                $booking->client
+            );
+
+            if (abs((float) $payment->amount - $remaining) > 0.001) {
+                throw new RuntimeException(
+                    'Payment amount does not match remaining balance.'
+                );
+            }
+
+            return app(\App\Services\PosPaymentService::class)
+                ->markAsPaidManually(
+                    payment: $payment,
+                    terminalId: $terminalId,
+                    referenceNumber: $referenceNumber,
+                    createdBy: $createdBy
+                );
+
+        }, 3);
+    }
+
+    public function reserveRemainingPaymentInitiation(
+        Booking $booking,
+                $client
+    ): array {
+
+        return DB::transaction(function () use ($booking, $client) {
+
+            $booking = Booking::query()
+                ->whereKey($booking->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            if (
+                !$client ||
+                (int) $booking->client_id !== (int) $client->id
+            ) {
+                throw new RuntimeException(
+                    'Booking does not belong to this client.'
+                );
+            }
+
+            if ($booking->status === 'cancelled') {
+                throw new RuntimeException(
+                    'Cancelled booking cannot be paid.'
+                );
+            }
+
+            $remaining = $this->getBookingRemainingAmount($booking);
+
+            if ($remaining <= 0) {
+                throw new RuntimeException(
+                    'This booking has no remaining balance.'
+                );
+            }
+
+            $pendingPayments = Payment::query()
+                ->where('booking_id', $booking->id)
+                ->where('type', 'remaining')
+                ->where('status', 'pending')
+                ->orderBy('id')
+                ->lockForUpdate()
+                ->get();
+
+            if ($pendingPayments->count() > 1) {
+                throw new RuntimeException(
+                    'Multiple pending payments require review.'
+                );
+            }
+
+            $payment = $pendingPayments->first();
+
+            if ($payment) {
+
+                // An existing initiation must be resolved first.
+                // Expiration alone does not prove gateway failure.
+                if (!empty($payment->initiation_token)) {
+                    throw new RuntimeException(
+                        'Payment initiation is already in progress or requires review.'
+                    );
+                }
+
+                if (
+                    !empty($payment->authority) ||
+                    !empty($payment->transaction_id) ||
+                    !empty($payment->reference_number) ||
+                    !empty($payment->offline_id)
+                ) {
+                    throw new RuntimeException(
+                        'Existing payment requires review.'
+                    );
+                }
+
+            } else {
+
+                $payment = Payment::create([
+                    'booking_id' => $booking->id,
+                    'client_id' => $client->id,
+                    'amount' => $remaining,
+                    'type' => 'remaining',
+                    'payment_method' => 'online',
+                    'status' => 'pending',
+                    'gateway' => null,
+                    'authority' => null,
+                ]);
+            }
+
+            $token = (string) \Illuminate\Support\Str::uuid();
+
+            $payment->update([
+                'client_id' => $client->id,
+                'amount' => $remaining,
+                'payment_method' => 'online',
+                'initiation_token' => $token,
+                'initiation_expires_at' => now()->addMinutes(5),
+            ]);
+
+            return [
+                'payment' => $payment->fresh(),
+                'token' => $token,
+            ];
+
+        }, 3);
+    }
+    public function completeRemainingPaymentInitiation(
+        Payment $payment,
+        string $token,
+        string $authority
+    ): Payment {
+
+        $authority = trim($authority);
+
+        if ($authority === '') {
+            throw new RuntimeException(
+                'ZarinPal authority is required.'
+            );
+        }
+
+        return DB::transaction(function () use (
+            $payment,
+            $token,
+            $authority
+        ) {
+
+            $booking = Booking::query()
+                ->whereKey($payment->booking_id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            $payment = Payment::query()
+                ->whereKey($payment->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            if (
+                $payment->type !== 'remaining' ||
+                $payment->status !== 'pending'
+            ) {
+                throw new RuntimeException(
+                    'Payment is not eligible for initiation completion.'
+                );
+            }
+
+            if (
+                !hash_equals(
+                    (string) $payment->initiation_token,
+                    $token
+                )
+            ) {
+                throw new RuntimeException(
+                    'Payment initiation token mismatch.'
+                );
+            }
+
+            if (!empty($payment->authority)) {
+                throw new RuntimeException(
+                    'Payment already has an authority.'
+                );
+            }
+
+            $duplicate = Payment::query()
+                ->where('authority', $authority)
+                ->where('id', '!=', $payment->id)
+                ->exists();
+
+            if ($duplicate) {
+                throw new RuntimeException(
+                    'Authority is already assigned.'
+                );
+            }
+
+            $payment->update([
+                'gateway' => 'zarinpal',
+                'payment_method' => 'online',
+                'authority' => $authority,
+                'initiation_token' => null,
+                'initiation_expires_at' => null,
+            ]);
+
+            return $payment->fresh();
+
+        }, 3);
+    }
+    public function releaseRemainingPaymentInitiation(
+        Payment $payment,
+        string $token
+    ): Payment {
+
+        return DB::transaction(function () use ($payment, $token) {
+
+            $booking = Booking::query()
+                ->whereKey($payment->booking_id)
+                ->lockForUpdate()
+                ->firstOrFail();
+            $this->ensureNoUnresolvedPosPayment($booking);
+
+            $payment = Payment::query()
+                ->whereKey($payment->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            if (
+                $payment->status !== 'pending' ||
+                $payment->type !== 'remaining'
+            ) {
+                throw new RuntimeException(
+                    'Payment cannot be released.'
+                );
+            }
+
+            if (
+                !hash_equals(
+                    (string) $payment->initiation_token,
+                    $token
+                )
+            ) {
+                throw new RuntimeException(
+                    'Payment initiation token mismatch.'
+                );
+            }
+
+            if (!empty($payment->authority)) {
+                throw new RuntimeException(
+                    'Payment has an authority and cannot be released.'
+                );
+            }
+
+            $payment->update([
+                'initiation_token' => null,
+                'initiation_expires_at' => null,
+            ]);
+
+            return $payment->fresh();
+
+        }, 3);
+    }
+    public function reserveDepositPaymentInitiation(
+        Booking $booking,
+                $client
+    ): array {
+
+        return DB::transaction(function () use ($booking, $client) {
+
+            $booking = Booking::query()
+                ->whereKey($booking->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+            $this->ensureNoUnresolvedPosPayment($booking);
+
+            if (
+                !$client ||
+                (int) $booking->client_id !== (int) $client->id
+            ) {
+                throw new RuntimeException(
+                    'Booking does not belong to this client.'
+                );
+            }
+
+            if ($booking->status === 'cancelled') {
+                throw new RuntimeException(
+                    'Cancelled booking cannot be paid.'
+                );
+            }
+
+            // All deposit payments must be examined before reuse.
+            $depositPayments = Payment::query()
+                ->where('booking_id', $booking->id)
+                ->where('type', 'deposit')
+                ->orderBy('id')
+                ->lockForUpdate()
+                ->get();
+
+            if ($depositPayments->contains(
+                fn (Payment $payment) => $payment->status === 'paid'
+            )) {
+                throw new RuntimeException(
+                    'Booking deposit has already been paid.'
+                );
+            }
+
+            $pendingPayments = $depositPayments
+                ->where('status', 'pending');
+
+            if ($pendingPayments->count() > 1) {
+                throw new RuntimeException(
+                    'Multiple pending deposit payments require review.'
+                );
+            }
+
+            $existing = $pendingPayments->first();
+
+            if ($existing) {
+                if (!empty($existing->initiation_token)) {
+                    throw new RuntimeException(
+                        'Deposit payment initiation is unresolved.'
+                    );
+                }
+
+                if (
+                    !empty($existing->authority) ||
+                    !empty($existing->transaction_id) ||
+                    !empty($existing->reference_number) ||
+                    !empty($existing->offline_id)
+                ) {
+                    throw new RuntimeException(
+                        'Existing deposit payment requires review.'
+                    );
+                }
+            }
+
+            // Reuse existing business rules for deposit amount.
+            $payment = $this->createDepositPayment(
+                $booking,
+                $client
+            );
+
+            if (
+                $payment->status !== 'pending' ||
+                $payment->type !== 'deposit'
+            ) {
+                throw new RuntimeException(
+                    'Deposit payment is not eligible.'
+                );
+            }
+
+            // Refresh the locked payment record.
+            $payment = Payment::query()
+                ->whereKey($payment->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            if (
+                !empty($payment->initiation_token) ||
+                !empty($payment->authority) ||
+                !empty($payment->transaction_id) ||
+                !empty($payment->reference_number) ||
+                !empty($payment->offline_id)
+            ) {
+                throw new RuntimeException(
+                    'Deposit payment requires review.'
+                );
+            }
+
+            $token = (string) \Illuminate\Support\Str::uuid();
+
+            $payment->forceFill([
+                'initiation_token' => $token,
+                'initiation_expires_at' => now()->addMinutes(5),
+                'payment_method' => 'online',
+            ])->save();
+
+            return [
+                'payment' => $payment->fresh(),
+                'token' => $token,
+            ];
+
+        }, 3);
+    }
+    public function completeDepositPaymentInitiation(
+        Payment $payment,
+        string $token,
+        string $authority
+    ): Payment {
+
+        $authority = trim($authority);
+
+        if ($authority === '') {
+            throw new RuntimeException(
+                'ZarinPal authority is required.'
+            );
+        }
+
+        return DB::transaction(function () use (
+            $payment,
+            $token,
+            $authority
+        ) {
+
+            $booking = Booking::query()
+                ->whereKey($payment->booking_id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            $payment = Payment::query()
+                ->whereKey($payment->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            if ($booking->status === 'cancelled') {
+                throw new RuntimeException(
+                    'Cancelled booking cannot be paid.'
+                );
+            }
+
+            if (
+                $payment->type !== 'deposit' ||
+                $payment->status !== 'pending'
+            ) {
+                throw new RuntimeException(
+                    'Deposit payment is not pending.'
+                );
+            }
+
+            if (
+                empty($payment->initiation_token) ||
+                !hash_equals(
+                    (string) $payment->initiation_token,
+                    $token
+                )
+            ) {
+                throw new RuntimeException(
+                    'Payment initiation token mismatch.'
+                );
+            }
+
+            if (!empty($payment->authority)) {
+                throw new RuntimeException(
+                    'Payment already has an authority.'
+                );
+            }
+
+            $duplicate = Payment::query()
+                ->where('authority', $authority)
+                ->where('id', '!=', $payment->id)
+                ->exists();
+
+            if ($duplicate) {
+                throw new RuntimeException(
+                    'Authority is already assigned.'
+                );
+            }
+
+            $payment->forceFill([
+                'gateway' => 'zarinpal',
+                'payment_method' => 'online',
+                'authority' => $authority,
+                'initiation_token' => null,
+                'initiation_expires_at' => null,
+            ])->save();
+
+            return $payment->fresh();
+
+        }, 3);
+    }
+    public function ensureNoUnresolvedPosPayment(
+        \App\Models\Booking $booking
+    ): void {
+        $hasUnresolvedPos = \App\Models\PosPaymentRequest::query()
+            ->whereHas('payment', function ($query) use ($booking) {
+                $query->where('booking_id', $booking->id);
+            })
+            ->whereIn('status', [
+                'pending',
+                'processing',
+                'unknown',
+            ])
+            ->exists();
+
+        if ($hasUnresolvedPos) {
+            throw new \RuntimeException(
+                'An unresolved POS transaction exists. Reconciliation is required.'
             );
         }
     }

@@ -82,7 +82,10 @@ class OfflineSyncController extends Controller
             | Payment / Refund مشتری را از خود Payment تشخیص می‌دهند.
             |
             */
-
+            $this->authorizeFinancialAction(
+                $operator,
+                $request->string('action')->toString()
+            );
             $clientId = null;
             $userId = (int) $operator->id;
 
@@ -108,6 +111,14 @@ class OfflineSyncController extends Controller
                     $syncRequest
                 ),
             ]);
+
+        } catch (\Illuminate\Auth\Access\AuthorizationException $e) {
+
+            return response()->json([
+                'status' => false,
+                'statusCode' => 403,
+                'message' => $e->getMessage(),
+            ], 403);
 
         } catch (Throwable $e) {
 
@@ -198,6 +209,17 @@ class OfflineSyncController extends Controller
         ) {
 
             try {
+
+                /*
+                |--------------------------------------------------------------------------
+                | Financial Authorization
+                |--------------------------------------------------------------------------
+                */
+
+                $this->authorizeFinancialAction(
+                    $operator,
+                    (string) $operation['action']
+                );
 
                 $syncRequest = $offlineSyncService->process(
                     $clientId,
@@ -307,6 +329,51 @@ class OfflineSyncController extends Controller
             ], 404);
         }
 
+        /*
+|--------------------------------------------------------------------------
+| Status Authorization
+|--------------------------------------------------------------------------
+*/
+
+        $operator = auth('operator')->user();
+
+        if (!$operator) {
+            return response()->json([
+                'status' => false,
+                'statusCode' => 401,
+                'message' => 'Unauthenticated operator.',
+            ], 401);
+        }
+
+// Admin can view all requests.
+// Staff can only view their own requests.
+        if (
+            !$operator->isAdmin() &&
+            (
+                $syncRequest->user_id === null ||
+                (int) $syncRequest->user_id !== (int) $operator->id
+            )
+        ) {
+            return response()->json([
+                'status' => false,
+                'statusCode' => 403,
+                'message' => 'You cannot access another operator request.',
+            ], 403);
+        }
+
+        try {
+            $this->authorizeFinancialAction(
+                $operator,
+                $syncRequest->action
+            );
+        } catch (\Illuminate\Auth\Access\AuthorizationException $e) {
+            return response()->json([
+                'status' => false,
+                'statusCode' => 403,
+                'message' => $e->getMessage(),
+            ], 403);
+        }
+
         return response()->json([
             'status' => true,
             'statusCode' => 200,
@@ -341,6 +408,50 @@ class OfflineSyncController extends Controller
                 'statusCode' => 404,
                 'message' => 'Offline sync request not found.',
             ], 404);
+        }
+        /*
+|--------------------------------------------------------------------------
+| Retry Authorization
+|--------------------------------------------------------------------------
+*/
+
+        $operator = auth('operator')->user();
+
+        if (!$operator) {
+            return response()->json([
+                'status' => false,
+                'statusCode' => 401,
+                'message' => 'Unauthenticated operator.',
+            ], 401);
+        }
+
+// Only the original operator or an admin can access this request.
+        if (
+            !$operator->isAdmin() &&
+            (
+                $syncRequest->user_id === null ||
+                (int) $syncRequest->user_id !== (int) $operator->id
+            )
+        ) {
+            return response()->json([
+                'status' => false,
+                'statusCode' => 403,
+                'message' => 'You cannot retry another operator request.',
+            ], 403);
+        }
+
+// Check permission for the original financial action.
+        try {
+            $this->authorizeFinancialAction(
+                $operator,
+                $syncRequest->action
+            );
+        } catch (\Illuminate\Auth\Access\AuthorizationException $e) {
+            return response()->json([
+                'status' => false,
+                'statusCode' => 403,
+                'message' => $e->getMessage(),
+            ], 403);
         }
 
         /*
@@ -445,5 +556,32 @@ class OfflineSyncController extends Controller
                 $syncRequest->updated_at
                     ?->toDateTimeString(),
         ];
+    }
+    /**
+     * Check operator permission for financial actions.
+     */
+    private function authorizeFinancialAction(
+        \App\Models\User $operator,
+        string $action
+    ): void {
+        if ($operator->isAdmin()) {
+            return;
+        }
+
+        $staffAllowedActions = [
+            'payment_pos',
+            'payment_cash',
+        ];
+
+        if (
+            $operator->role === 'staff' &&
+            in_array($action, $staffAllowedActions, true)
+        ) {
+            return;
+        }
+
+        throw new \Illuminate\Auth\Access\AuthorizationException(
+            'You do not have permission to perform this financial operation.'
+        );
     }
 }

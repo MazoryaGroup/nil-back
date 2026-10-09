@@ -9,6 +9,7 @@ use Tymon\JWTAuth\Contracts\JWTSubject;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Str;
+use Illuminate\Database\Eloquent\Relations\HasManyThrough;
 
 class Client extends Authenticatable implements JWTSubject
 {
@@ -88,6 +89,17 @@ class Client extends Authenticatable implements JWTSubject
         return $this->hasMany(
             ReferralRewardUsage::class,
             'client_id'
+        );
+    }
+    public function bookingPayments(): HasManyThrough
+    {
+        return $this->hasManyThrough(
+            Payment::class,
+            Booking::class,
+            'client_id',
+            'booking_id',
+            'id',
+            'id'
         );
     }
 }

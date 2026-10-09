@@ -305,13 +305,17 @@ class BookingAvailabilityService
             ->values();
     }
 
+
     public function isTimeAvailable(
         int $staffId,
         string $date,
         string $startTime,
         string $endTime,
-        ?int $ignoreBookingId = null
+        ?int $ignoreBookingId = null,
+        ?int $ignoreBookingServiceId = null,
+        ?int $ignoreHoldBookingId = null
     ): bool {
+
         $staff = Staff::with([
             'schedules',
             'breaks',
@@ -321,6 +325,12 @@ class BookingAvailabilityService
         if (!$staff->is_active) {
             return false;
         }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Date and Time
+        |--------------------------------------------------------------------------
+        */
 
         $dateObject = Carbon::createFromFormat(
             'Y-m-d',
@@ -339,9 +349,13 @@ class BookingAvailabilityService
             $date . ' ' . $endTime
         );
 
+        if ($requestedEnd->lte($requestedStart)) {
+            return false;
+        }
+
         /*
         |--------------------------------------------------------------------------
-        | Must be inside at least one working schedule
+        | Working Schedule
         |--------------------------------------------------------------------------
         */
 
@@ -353,6 +367,7 @@ class BookingAvailabilityService
                 $requestedStart,
                 $requestedEnd
             ) {
+
                 $scheduleStart = Carbon::createFromFormat(
                     'Y-m-d H:i:s',
                     $date . ' ' . $schedule->start_time
@@ -380,6 +395,7 @@ class BookingAvailabilityService
         $fullDayLeave = $staff->leaves
             ->where('is_active', true)
             ->contains(function ($leave) use ($date) {
+
                 return $leave->leave_date
                     && $leave->leave_date->format('Y-m-d') === $date
                     && is_null($leave->start_time)
@@ -392,17 +408,18 @@ class BookingAvailabilityService
 
         /*
         |--------------------------------------------------------------------------
-        | Partial Leaves
+        | Partial Leave
         |--------------------------------------------------------------------------
         */
 
-        $partialLeave = $staff->leaves
+        $overlapsLeave = $staff->leaves
             ->where('is_active', true)
             ->contains(function ($leave) use (
                 $date,
                 $requestedStart,
                 $requestedEnd
             ) {
+
                 if (
                     !$leave->leave_date ||
                     $leave->leave_date->format('Y-m-d') !== $date ||
@@ -426,13 +443,13 @@ class BookingAvailabilityService
                     && $requestedEnd->gt($leaveStart);
             });
 
-        if ($partialLeave) {
+        if ($overlapsLeave) {
             return false;
         }
 
         /*
         |--------------------------------------------------------------------------
-        | Breaks
+        | Staff Breaks
         |--------------------------------------------------------------------------
         */
 
@@ -444,6 +461,7 @@ class BookingAvailabilityService
                 $requestedStart,
                 $requestedEnd
             ) {
+
                 $breakStart = Carbon::createFromFormat(
                     'Y-m-d H:i:s',
                     $date . ' ' . $break->start_time
@@ -470,10 +488,22 @@ class BookingAvailabilityService
 
         $overlapsBooking = BookingServiceModel::query()
             ->where('staff_id', $staffId)
+
+            // Ignore only the booking service being edited.
+            ->when(
+                $ignoreBookingServiceId !== null,
+                fn ($query) => $query->where(
+                    'id',
+                    '!=',
+                    $ignoreBookingServiceId
+                )
+            )
+
             ->whereHas('booking', function ($query) use (
                 $date,
                 $ignoreBookingId
             ) {
+
                 $query
                     ->whereDate('booking_date', $date)
                     ->whereNotIn('status', [
@@ -482,16 +512,24 @@ class BookingAvailabilityService
                         'no_show',
                     ]);
 
-                if ($ignoreBookingId) {
-                    $query->where('id', '!=', $ignoreBookingId);
+                // Backward compatibility for existing callers.
+                if ($ignoreBookingId !== null) {
+                    $query->where(
+                        'id',
+                        '!=',
+                        $ignoreBookingId
+                    );
                 }
             })
+
             ->get()
+
             ->contains(function ($bookingService) use (
                 $date,
                 $requestedStart,
                 $requestedEnd
             ) {
+
                 $bookingStart = Carbon::createFromFormat(
                     'Y-m-d H:i:s',
                     $date . ' ' . $bookingService->start_time
@@ -520,12 +558,25 @@ class BookingAvailabilityService
             ->whereDate('hold_date', $date)
             ->where('status', 'active')
             ->where('expires_at', '>', now())
+
+            // Ignore holds of the current booking if requested.
+            ->when(
+                $ignoreHoldBookingId !== null,
+                fn ($query) => $query->where(
+                    'booking_id',
+                    '!=',
+                    $ignoreHoldBookingId
+                )
+            )
+
             ->get()
+
             ->contains(function ($hold) use (
                 $date,
                 $requestedStart,
                 $requestedEnd
             ) {
+
                 $holdStart = Carbon::createFromFormat(
                     'Y-m-d H:i:s',
                     $date . ' ' . $hold->start_time
@@ -544,7 +595,14 @@ class BookingAvailabilityService
             return false;
         }
 
+        /*
+        |--------------------------------------------------------------------------
+        | Available
+        |--------------------------------------------------------------------------
+        */
+
         return true;
     }
+
 }
 

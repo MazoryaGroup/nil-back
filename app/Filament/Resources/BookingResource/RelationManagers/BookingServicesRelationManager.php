@@ -14,6 +14,10 @@ use Filament\Tables\Table;
 use Filament\Notifications\Notification;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
+use App\Models\Staff;
+use App\Models\StaffService;
+use App\Services\BookingAvailabilityService;
+use Carbon\Carbon;
 
 class BookingServicesRelationManager extends RelationManager
 {
@@ -291,6 +295,160 @@ class BookingServicesRelationManager extends RelationManager
 
                         return $record->refresh();
                     }),
+
+
+                Tables\Actions\Action::make('assignStaff')
+                    ->label('تخصیص پرسنل')
+                    ->icon('heroicon-o-user-plus')
+                    ->color('primary')
+                    ->modalHeading('تخصیص یا تغییر پرسنل')
+                    ->modalSubmitActionLabel('ثبت تخصیص')
+                    ->form([
+                        Forms\Components\Select::make('staff_id')
+                            ->label('پرسنل')
+                            ->options(function (BookingService $record): array {
+                                $staffIds = StaffService::query()
+                                    ->where('service_id', $record->service_id)
+                                    ->where('is_active', true)
+                                    ->pluck('staff_id');
+
+                                return Staff::query()
+                                    ->whereIn('id', $staffIds)
+                                    ->where('is_active', true)
+                                    ->orderBy('name')
+                                    ->pluck('name', 'id')
+                                    ->toArray();
+                            })
+                            ->default(fn (BookingService $record) => $record->staff_id)
+                            ->searchable()
+                            ->required(),
+                    ])
+                    ->action(function (
+                        BookingService $record,
+                        array $data
+                    ): void {
+
+                        try {
+
+                            DB::transaction(function () use ($record, $data) {
+
+                            // Lock the parent booking.
+                            $booking = Booking::query()
+                                ->whereKey($record->booking_id)
+                                ->lockForUpdate()
+                                ->firstOrFail();
+
+                            if (in_array($booking->status, [
+                                'cancelled',
+                                'rejected',
+                                'completed',
+                                'no_show',
+                            ], true)) {
+                                throw ValidationException::withMessages([
+                                    'staff_id' => 'وضعیت این رزرو اجازه تخصیص پرسنل را نمی‌دهد.',
+                                ]);
+                            }
+
+                            // Lock the booking service.
+                            $bookingService = BookingService::query()
+                                ->whereKey($record->id)
+                                ->where('booking_id', $booking->id)
+                                ->lockForUpdate()
+                                ->firstOrFail();
+
+                            // Booking date is stored in Gregorian format.
+                            $bookingDate = Carbon::parse(
+                                $booking->booking_date
+                            )->format('Y-m-d');
+
+                            $bookingStart = Carbon::parse(
+                                $bookingDate . ' ' . $bookingService->start_time,
+                                'Asia/Tehran'
+                            );
+
+                            // Assignment must happen at least 24 hours in advance.
+                            if ($bookingStart->lt(
+                                Carbon::now('Asia/Tehran')->addHours(24)
+                            )) {
+                                throw ValidationException::withMessages([
+                                    'staff_id' => 'مهلت تخصیص پرسنل به پایان رسیده است. تخصیص باید بیش از ۲۴ ساعت قبل از شروع نوبت انجام شود.',
+                                ]);
+                            }
+
+                            $staffId = (int) $data['staff_id'];
+
+                            // Serialize assignments targeting the same staff.
+                            $staff = Staff::query()
+                                ->whereKey($staffId)
+                                ->lockForUpdate()
+                                ->firstOrFail();
+
+                            if (!$staff->is_active) {
+                                throw ValidationException::withMessages([
+                                    'staff_id' => 'پرسنل انتخاب‌شده غیرفعال است.',
+                                ]);
+                            }
+
+                            // Verify that staff can perform this service.
+                            $canPerformService = StaffService::query()
+                                ->where('staff_id', $staffId)
+                                ->where('service_id', $bookingService->service_id)
+                                ->where('is_active', true)
+                                ->exists();
+
+                            if (!$canPerformService) {
+                                throw ValidationException::withMessages([
+                                    'staff_id' => 'این پرسنل مجاز به ارائه خدمت انتخاب‌شده نیست.',
+                                ]);
+                            }
+
+                            // Prevent overlapping assignments.
+                            $isAvailable = app(BookingAvailabilityService::class)
+                                ->isTimeAvailable(
+                                    staffId: $staffId,
+                                    date: $bookingDate,
+                                    startTime: $bookingService->start_time,
+                                    endTime: $bookingService->end_time,
+                                    ignoreBookingServiceId: $bookingService->id
+                                );
+
+                            if (!$isAvailable) {
+                                throw ValidationException::withMessages([
+                                    'staff_id' => 'پرسنل در این ساعت ظرفیت ندارد یا برنامه کاری، استراحت، مرخصی یا رزرو دیگری با این زمان تداخل دارد.',
+                                ]);
+                            }
+
+                            // Only change the staff assignment.
+                            $bookingService->update([
+                                'staff_id' => $staffId,
+                            ]);
+
+
+                            }, 3);
+
+                        } catch (ValidationException $e) {
+
+                            $messages = collect($e->errors())
+                                ->flatten()
+                                ->implode("\n");
+
+                            Notification::make()
+                                ->title('تخصیص پرسنل انجام نشد')
+                                ->body($messages ?: 'اطلاعات انتخاب‌شده معتبر نیست.')
+                                ->danger()
+                                ->persistent()
+                                ->send();
+
+                            return;
+                        }
+
+                        Notification::make()
+                            ->title('پرسنل با موفقیت تخصیص داده شد')
+                            ->success()
+                            ->send();
+                    }),
+
+
 
             ])
             ->bulkActions([]);

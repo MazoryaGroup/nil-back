@@ -169,6 +169,15 @@ class SmsService
      * این لینک پرداخت
      * #LINK#
      */
+
+
+    /**
+     * Send NIL short payment link via SMS.ir.
+     *
+     * Template: 254464
+     * Parameter: LINK
+     * Maximum length: 50 characters
+     */
     public function sendPaymentLink(
         Booking $booking,
         string $paymentUrl
@@ -192,35 +201,24 @@ class SmsService
             );
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Validate Payment URL
-        |--------------------------------------------------------------------------
-        */
-
         $paymentUrl = trim($paymentUrl);
 
+        // Accept only NIL payment short links.
         if (
-            !filter_var($paymentUrl, FILTER_VALIDATE_URL)
-            || parse_url($paymentUrl, PHP_URL_SCHEME) !== 'https'
+            !preg_match(
+                '~\Ahttps://nil\.mazoryagroup\.ir/p/[A-Za-z0-9]{16}\z~D',
+                $paymentUrl
+            )
         ) {
             throw new RuntimeException(
-                'Invalid payment URL.'
+                'Invalid NIL short payment URL.'
             );
         }
 
-        $host = strtolower(
-            (string) parse_url($paymentUrl, PHP_URL_HOST)
-        );
-
-        $allowedHosts = [
-            'payment.zarinpal.com',
-            'www.zarinpal.com',
-        ];
-
-        if (!in_array($host, $allowedHosts, true)) {
+        // SMS.ir template parameter limit.
+        if (strlen($paymentUrl) > 50) {
             throw new RuntimeException(
-                'Payment URL host is not allowed.'
+                'Payment link exceeds SMS.ir 50-character limit.'
             );
         }
 
@@ -233,9 +231,11 @@ class SmsService
             type: 'payment_link',
             booking: $booking,
             client: $client,
-            message: 'ZarinPal payment link for booking #' . $booking->id
+            message: 'NIL payment link for booking #' . $booking->id
         );
     }
+
+
 
     /**
      * Booking Confirmed.

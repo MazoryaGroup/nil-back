@@ -26,6 +26,7 @@ class Payment extends Model
         'initiation_token',
         'initiation_expires_at',
         'pos_terminal_id',
+        'short_link_token',
     ];
 
     protected $casts = [

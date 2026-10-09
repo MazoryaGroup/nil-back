@@ -55,5 +55,9 @@ return [
         'sandbox' => env('ZARINPAL_SANDBOX', true),
         'callback_url' => env('ZARINPAL_CALLBACK_URL'),
     ],
+    'nil' => [
+        'frontend_url' => env('NIL_FRONTEND_URL'),
+        'payment_short_path' => env('NIL_PAYMENT_SHORT_PATH', '/p'),
+    ],
 
 ];

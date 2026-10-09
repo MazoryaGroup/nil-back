@@ -20,6 +20,7 @@ use Illuminate\Support\HtmlString;
 use RuntimeException;
 use Throwable;
 use App\Services\RefundService;
+use App\Services\ShortPaymentLinkService;
 
 class PaymentsRelationManager extends RelationManager
 {
@@ -425,7 +426,7 @@ class PaymentsRelationManager extends RelationManager
                 Tables\Actions\Action::make('onlinePaymentLink')
                     ->label('لینک پرداخت آنلاین')
                     ->icon('heroicon-o-link')
-                    ->color('warning')
+                    ->color('primary')
                     ->visible(fn () => $this->canSettle())
 
                     ->form([
@@ -526,6 +527,8 @@ class PaymentsRelationManager extends RelationManager
                                     token: $token,
                                     authority: $authority
                                 );
+                            $shortPaymentUrl = app(ShortPaymentLinkService::class)
+                                ->getOrCreate($payment);
 
                             /*
                             | 4. Send SMS independently
@@ -549,7 +552,7 @@ class PaymentsRelationManager extends RelationManager
                                 app(SmsService::class)
                                     ->sendPaymentLink(
                                         booking: $booking,
-                                        paymentUrl: $paymentUrl
+                                        paymentUrl: $shortPaymentUrl
                                     );
 
                                 $smsSent = true;
@@ -882,7 +885,8 @@ class PaymentsRelationManager extends RelationManager
                                 $record
                             );
 
-                            $url = $this->paymentUrl($record);
+                            $url = app(ShortPaymentLinkService::class)
+                                ->getOrCreate($record);
 
                             app(SmsService::class)
                                 ->sendPaymentLink(

@@ -16,6 +16,7 @@ use App\Http\Controllers\Api\PaymentController;
 use App\Http\Controllers\Api\WaitingListController;
 use App\Http\Controllers\Api\ServiceController;
 use App\Http\Controllers\Api\StaffController;
+use App\Http\Controllers\Api\ShortPaymentLinkController;
 
 
 /*
@@ -453,3 +454,9 @@ Route::middleware('auth:operator')
         ]);
     });
 
+
+
+Route::get(
+    '/v1/payments/resolve/{token}',
+    [ShortPaymentLinkController::class, 'resolve']
+)->middleware('throttle:30,1');

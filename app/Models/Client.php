@@ -61,6 +61,7 @@ class Client extends Authenticatable implements JWTSubject
         return $this->belongsTo(Client::class, 'referrer_id');
     }
 
+
     public function referrals(): HasMany
     {
         return $this->hasMany(Client::class, 'referrer_id');

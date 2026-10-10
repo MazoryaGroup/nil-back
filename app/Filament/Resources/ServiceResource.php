@@ -47,14 +47,14 @@ class ServiceResource extends Resource
                 ->default(60),
 
             Forms\Components\TextInput::make('price')
-                ->label('قیمت')
+                ->label('قیمت (تومان)')
                 ->numeric()
                 ->minValue(0)
                 ->required()
                 ->default(0),
 
             Forms\Components\TextInput::make('deposit_amount')
-                ->label('مبلغ بیعانه')
+                ->label('مبلغ بیعانه (تومان)')
                 ->numeric()
                 ->minValue(0)
                 ->required()
@@ -85,15 +85,18 @@ class ServiceResource extends Resource
                     ->sortable(),
 
                 Tables\Columns\TextColumn::make('price')
-                    ->label('قیمت')
-                    ->money('IRR')
+                    ->label('قیمت (تومان)')
+                    ->formatStateUsing(
+                        fn ($state) => number_format((float) $state) . ' تومان'
+                    )
                     ->sortable(),
 
                 Tables\Columns\TextColumn::make('deposit_amount')
-                    ->label('بیعانه')
-                    ->money('IRR')
+                    ->label('بیعانه (تومان)')
+                    ->formatStateUsing(
+                        fn ($state) => number_format((float) $state) . ' تومان'
+                    )
                     ->sortable(),
-
                 Tables\Columns\IconColumn::make('is_active')
                     ->label('فعال')
                     ->boolean(),

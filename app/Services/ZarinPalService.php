@@ -76,7 +76,7 @@ class ZarinPalService
 
         $request = new RequestRequest();
 
-        $request->amount = (int) round($amount);
+        $request->amount = (int) round($amount * 10);
         $request->description = $description;
         $request->callback_url = $callbackUrl;
         $request->mobile = $mobile;
@@ -149,7 +149,7 @@ class ZarinPalService
 
         $request = new VerifyRequest();
 
-        $request->amount = (int) round($amount);
+        $request->amount = (int) round($amount * 10);
         $request->authority = $authority;
 
         $response = $zarinpal

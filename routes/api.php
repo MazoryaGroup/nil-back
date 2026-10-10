@@ -17,6 +17,7 @@ use App\Http\Controllers\Api\WaitingListController;
 use App\Http\Controllers\Api\ServiceController;
 use App\Http\Controllers\Api\StaffController;
 use App\Http\Controllers\Api\ShortPaymentLinkController;
+use App\Http\Controllers\Api\DiscountCodeController;
 
 
 /*
@@ -455,6 +456,17 @@ Route::middleware('auth:operator')
     });
 
 
+
+
+
+Route::middleware('auth:api')->prefix('v1')->group(function () {
+
+    Route::post(
+        '/discount-codes/validate',
+        [DiscountCodeController::class, 'validateCode']
+    );
+
+});
 
 Route::get(
     '/v1/payments/resolve/{token}',

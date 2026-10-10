@@ -34,7 +34,12 @@ class ExpenseResource extends Resource
 
                 Forms\Components\Select::make('expense_category_id')
                     ->label('دسته‌بندی هزینه')
-                    ->relationship('category', 'name')
+                    ->relationship(
+                        name: 'category',
+                        titleAttribute: 'name',
+                        modifyQueryUsing: fn ($query) =>
+                        $query->where('is_active', true)
+                    )
                     ->searchable()
                     ->preload()
                     ->required(),

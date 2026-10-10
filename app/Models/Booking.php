@@ -116,4 +116,11 @@ class Booking extends Model
             'booking_id'
         );
     }
+    public function discountUsage(): HasOne
+    {
+        return $this->hasOne(
+            DiscountUsage::class,
+            'booking_id'
+        );
+    }
 }

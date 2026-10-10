@@ -12,6 +12,7 @@ use Illuminate\Http\Request;
 use RuntimeException;
 use Throwable;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Http\RedirectResponse;
 
 
 class PaymentController extends Controller
@@ -472,8 +473,26 @@ class PaymentController extends Controller
     */
 
 
-    public function callback(Request $request): JsonResponse
+    public function callback(Request $request): RedirectResponse
     {
+        $frontendUrl = rtrim(
+            (string) config('services.nil.frontend_url'),
+            '/'
+        );
+
+        $successUrl = $frontendUrl . '/payment/success';
+        $failedUrl = $frontendUrl . '/payment/failed';
+
+        $redirectTo = function (string $url, array $params = []): RedirectResponse {
+            $query = http_build_query(
+                array_filter($params, fn ($value) => $value !== null)
+            );
+
+            return redirect()->away(
+                $url . ($query !== '' ? '?' . $query : '')
+            );
+        };
+
         $authority = trim((string) $request->query('Authority'));
 
         $status = strtoupper(
@@ -481,31 +500,15 @@ class PaymentController extends Controller
         );
 
         $payment = null;
-        $verifyResult = null;
         $transactionId = null;
         $gatewayVerified = false;
 
         try {
-
-            /*
-            |--------------------------------------------------------------------------
-            | Validate Authority
-            |--------------------------------------------------------------------------
-            */
-
             if ($authority === '') {
-                return response()->json([
-                    'success' => false,
-                    'statusCode' => 422,
-                    'message' => 'ZarinPal authority is missing.',
-                ], 422);
+                return $redirectTo($failedUrl, [
+                    'reason' => 'missing_authority',
+                ]);
             }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Find Payment
-            |--------------------------------------------------------------------------
-            */
 
             $payment = Payment::query()
                 ->where('authority', $authority)
@@ -519,42 +522,20 @@ class PaymentController extends Controller
                     'status' => $status,
                 ]);
 
-                return response()->json([
-                    'success' => false,
-                    'statusCode' => 404,
-                    'message' => 'Payment not found.',
-                ], 404);
+                return $redirectTo($failedUrl, [
+                    'reason' => 'payment_not_found',
+                ]);
             }
 
-            /*
-            |--------------------------------------------------------------------------
-            | Already Paid
-            |--------------------------------------------------------------------------
-            */
-
+            // Payment was already verified.
             if ($payment->status === 'paid') {
-                return response()->json([
-                    'success' => true,
-                    'statusCode' => 200,
-                    'message' => 'Payment has already been verified.',
-                    'data' => [
-                        'payment_id' => $payment->id,
-                        'booking_id' => $payment->booking_id,
-                        'type' => $payment->type,
-                        'amount' => $payment->amount,
-                        'status' => $payment->status,
-                        'transaction_id' => $payment->transaction_id,
-                        'authority' => $payment->authority,
-                    ],
-                ], 200);
+                return $redirectTo($successUrl, [
+                    'payment_id' => $payment->id,
+                    'booking_id' => $payment->booking_id,
+                ]);
             }
 
-            /*
-            |--------------------------------------------------------------------------
-            | Callback Status
-            |--------------------------------------------------------------------------
-            */
-
+            // Customer cancelled or gateway did not complete payment.
             if ($status !== 'OK') {
                 Log::info('ZarinPal callback: payment not completed', [
                     'payment_id' => $payment->id,
@@ -562,47 +543,28 @@ class PaymentController extends Controller
                     'status' => $status,
                 ]);
 
-                return response()->json([
-                    'success' => false,
-                    'statusCode' => 422,
-                    'message' => 'Payment was cancelled or failed.',
-                    'data' => [
-                        'authority' => $authority,
-                        'status' => $status,
-                    ],
-                ], 422);
+                return $redirectTo($failedUrl, [
+                    'payment_id' => $payment->id,
+                    'booking_id' => $payment->booking_id,
+                    'reason' => 'cancelled_or_failed',
+                ]);
             }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Pending Payment Required
-            |--------------------------------------------------------------------------
-            */
 
             if ($payment->status !== 'pending') {
                 Log::warning('ZarinPal callback: invalid payment state', [
                     'payment_id' => $payment->id,
                     'payment_status' => $payment->status,
-                    'authority' => $authority,
                 ]);
 
-                return response()->json([
-                    'success' => false,
-                    'statusCode' => 409,
-                    'message' => 'Payment requires manual review.',
-                ], 409);
+                return $redirectTo($failedUrl, [
+                    'payment_id' => $payment->id,
+                    'booking_id' => $payment->booking_id,
+                    'reason' => 'manual_review',
+                ]);
             }
 
-            /*
-            |--------------------------------------------------------------------------
-            | Verify With ZarinPal
-            |--------------------------------------------------------------------------
-            |
-            | Amount is stored in toman.
-            | ZarinPalService must handle conversion to rial.
-            |
-            */
-
+            // Payment amounts are stored in toman.
+            // ZarinPalService converts toman to rial.
             $verifyResult = app(ZarinPalService::class)
                 ->verifyPayment(
                     amount: (float) $payment->amount,
@@ -624,20 +586,11 @@ class PaymentController extends Controller
             Log::info('ZarinPal payment verified by gateway', [
                 'payment_id' => $payment->id,
                 'booking_id' => $payment->booking_id,
-                'authority' => $authority,
                 'transaction_id' => $transactionId,
                 'amount' => $payment->amount,
             ]);
 
-            /*
-            |--------------------------------------------------------------------------
-            | Save Verified Payment
-            |--------------------------------------------------------------------------
-            |
-            | PaymentService performs database locking.
-            |
-            */
-
+            // Save payment using existing PaymentService.
             if ($payment->type === 'deposit') {
 
                 $paidPayment = $this->paymentService
@@ -664,47 +617,19 @@ class PaymentController extends Controller
                 );
             }
 
-            /*
-            |--------------------------------------------------------------------------
-            | Refresh Booking
-            |--------------------------------------------------------------------------
-            */
+            Log::info('ZarinPal payment finalized successfully', [
+                'payment_id' => $paidPayment->id,
+                'booking_id' => $paidPayment->booking_id,
+                'transaction_id' => $paidPayment->transaction_id,
+            ]);
 
-            $booking = $paidPayment->booking()->first();
-
-            /*
-            |--------------------------------------------------------------------------
-            | Success Response
-            |--------------------------------------------------------------------------
-            */
-
-            return response()->json([
-                'success' => true,
-                'statusCode' => 200,
-                'message' => 'Payment verified successfully.',
-                'data' => [
-                    'payment_id' => $paidPayment->id,
-                    'booking_id' => $paidPayment->booking_id,
-                    'amount' => $paidPayment->amount,
-                    'type' => $paidPayment->type,
-                    'status' => $paidPayment->status,
-                    'payment_status' => $booking?->payment_status,
-                    'booking_status' => $booking?->status,
-                    'paid_amount' => $booking?->paid_amount,
-                    'authority' => $paidPayment->authority,
-                    'transaction_id' => $paidPayment->transaction_id,
-                    'paid_at' => $paidPayment->paid_at,
-                    'verify' => $verifyResult,
-                ],
-            ], 200);
+            // Redirect customer to success page.
+            return $redirectTo($successUrl, [
+                'payment_id' => $paidPayment->id,
+                'booking_id' => $paidPayment->booking_id,
+            ]);
 
         } catch (Throwable $e) {
-
-            /*
-            |--------------------------------------------------------------------------
-            | Log Payment Failure
-            |--------------------------------------------------------------------------
-            */
 
             Log::error('ZarinPal callback failed', [
                 'payment_id' => $payment?->id,
@@ -715,38 +640,21 @@ class PaymentController extends Controller
                 'error' => $e->getMessage(),
             ]);
 
-            /*
-            |--------------------------------------------------------------------------
-            | Gateway Verified But Local Save Failed
-            |--------------------------------------------------------------------------
-            |
-            | Do not mark this payment as failed.
-            | It requires reconciliation.
-            |
-            */
-
+            // Gateway confirmed payment, but local processing failed.
+            // Do not tell the customer that their money was not paid.
             if ($gatewayVerified) {
-
-                return response()->json([
-                    'success' => false,
-                    'statusCode' => 409,
-                    'message' =>
-                        'Payment was verified by the gateway but could not be finalized. Please contact support.',
-                    'data' => [
-                        'payment_id' => $payment?->id,
-                        'booking_id' => $payment?->booking_id,
-                        'authority' => $authority,
-                        'transaction_id' => $transactionId,
-                        'requires_reconciliation' => true,
-                    ],
-                ], 409);
+                return $redirectTo($failedUrl, [
+                    'payment_id' => $payment?->id,
+                    'booking_id' => $payment?->booking_id,
+                    'reason' => 'manual_review',
+                ]);
             }
 
-            return response()->json([
-                'success' => false,
-                'statusCode' => 422,
-                'message' => 'Payment verification failed.',
-            ], 422);
+            return $redirectTo($failedUrl, [
+                'payment_id' => $payment?->id,
+                'booking_id' => $payment?->booking_id,
+                'reason' => 'verification_failed',
+            ]);
         }
     }
 

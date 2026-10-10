@@ -9,6 +9,19 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 class ExpenseCategory extends Model
 {
     protected $table = 'expense_categories';
+    protected static ?string $model = ExpenseCategory::class;
+
+    protected static ?string $navigationIcon = 'heroicon-o-folder';
+
+    protected static ?string $navigationLabel = 'دسته‌بندی هزینه‌ها';
+
+    protected static ?string $modelLabel = 'دسته‌بندی هزینه';
+
+    protected static ?string $pluralModelLabel = 'دسته‌بندی هزینه‌ها';
+
+    protected static ?string $navigationGroup = 'حسابداری';
+
+    protected static ?int $navigationSort = 2;
 
     protected $fillable = [
         'name',

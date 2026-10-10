@@ -103,7 +103,18 @@ class ClientResource extends Resource
                     ->label('ایمیل')
                     ->sortable()
                     ->searchable(),
+                Tables\Columns\TextColumn::make('referral_code')
+                    ->label('کد معرف')
+                    ->searchable()
+                    ->copyable()
+                    ->placeholder('-'),
 
+                Tables\Columns\TextColumn::make('referrals_count')
+                    ->label('مشتری‌های معرفی‌شده')
+                    ->counts('referrals')
+                    ->badge()
+                    ->color(fn ($state) => $state > 0 ? 'success' : 'gray')
+                    ->sortable(),
                 Tables\Columns\TextColumn::make('referrer.name')
                     ->label('معرف')
                     ->default('-')

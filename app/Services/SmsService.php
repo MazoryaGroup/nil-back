@@ -206,7 +206,7 @@ class SmsService
         // Accept only NIL payment short links.
         if (
             !preg_match(
-                '~\Ahttps://nil\.mazoryagroup\.ir/p/[A-Za-z0-9]{16}\z~D',
+                '~\Ahttp:127.0.0.1:8000/p/[A-Za-z0-9]{16}\z~D',
                 $paymentUrl
             )
         ) {

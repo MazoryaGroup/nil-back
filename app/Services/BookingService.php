@@ -7,6 +7,7 @@ use App\Models\BookingHold;
 use App\Models\BookingService as BookingServiceModel;
 use App\Models\DiscountCode;
 use App\Models\DiscountUsage;
+use App\Models\Payment;
 use App\Models\Service;
 use App\Models\Staff;
 use App\Services\ReferralRewardService;
@@ -447,6 +448,7 @@ class BookingService
                     $clientUsageCount = DiscountUsage::query()
                         ->where('discount_code_id', $discount->id)
                         ->where('client_id', $clientId)
+                        ->whereIn('status', ['reserved', 'consumed'])
                         ->count();
 
                     if (
@@ -460,11 +462,21 @@ class BookingService
                     }
                 }
 
+                $discountValue = (float) $discount->value;
+
+                if ($discountValue <= 0 || (
+                        $discount->type === 'percentage' && $discountValue > 100
+                    )) {
+                    throw ValidationException::withMessages([
+                        'discount_code' => 'Invalid discount value.',
+                    ]);
+                }
+
                 if ($discount->type === 'percentage') {
-                    $discountAmount =
-                        $subtotal * ((float) $discount->value / 100);
+                    $discountAmount = $subtotal * ($discountValue / 100);
                 } else {
-                    $discountAmount = (float) $discount->value;
+                    // Keep the existing fixed-amount discount type compatible.
+                    $discountAmount = $discountValue;
                 }
 
                 if (
@@ -529,6 +541,10 @@ class BookingService
 
             $totalAmount = round($totalAmount, 2);
 
+            // Never request a deposit larger than the final payable amount.
+            $depositAmount = round(min(max(0, $depositAmount), $totalAmount), 2);
+            $isFreeBooking = $totalAmount <= 0;
+
             /*
             |--------------------------------------------------------------------------
             | Create Booking
@@ -548,8 +564,8 @@ class BookingService
                 'deposit_amount' => $depositAmount,
                 'paid_amount' => 0,
 
-                'status' => 'awaiting_payment',
-                'payment_status' => 'pending',
+                'status' => $isFreeBooking ? 'confirmed' : 'awaiting_payment',
+                'payment_status' => $isFreeBooking ? 'paid' : 'pending',
 
                 'notes' => $notes,
             ]);
@@ -582,6 +598,7 @@ class BookingService
                     'client_id' => $clientId,
                     'booking_id' => $booking->id,
                     'discount_amount' => $discountAmount,
+                    'status' => $isFreeBooking ? 'consumed' : 'reserved',
                 ]);
 
                 $discount->increment('usage_count');
@@ -604,6 +621,63 @@ class BookingService
                     bookingId: $booking->id,
                     orderAmount: $subtotal
                 );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Confirm fully discounted bookings without creating a payment
+            |--------------------------------------------------------------------------
+            */
+
+            if ($isFreeBooking) {
+                $booking->notifications()->firstOrCreate(
+                    ['type' => 'booking_confirmed'],
+                    [
+                        'user_id' => null,
+                        'client_id' => $booking->client_id,
+                        'title' => 'Booking Confirmed',
+                        'message' => 'Your booking has been confirmed for '
+                            . $booking->booking_date->format('Y-m-d')
+                            . ' at ' . substr($booking->start_time, 0, 5) . '.',
+                        'is_read' => false,
+                        'read_at' => null,
+                    ]
+                );
+
+                // Send external SMS only after the transaction commits.
+                $confirmedBookingId = $booking->id;
+                DB::afterCommit(function () use ($confirmedBookingId) {
+                    try {
+                        $confirmedBooking = Booking::with('client')->find($confirmedBookingId);
+                        $client = $confirmedBooking?->client;
+
+                        if (!$confirmedBooking || !$client || empty($client->phone)) {
+                            return;
+                        }
+
+                        if ($confirmedBooking->smsLogs()
+                            ->where('type', 'booking_confirmed')
+                            ->where('status', 'sent')
+                            ->exists()) {
+                            return;
+                        }
+
+                        app(SmsService::class)->sendBookingConfirmed(
+                            phone: $client->phone,
+                            date: Jalalian::fromCarbon(
+                                $confirmedBooking->booking_date
+                            )->format('Y/m/d'),
+                            time: substr($confirmedBooking->start_time, 0, 5),
+                            booking: $confirmedBooking,
+                            client: $client
+                        );
+                    } catch (\Throwable $e) {
+                        Log::error('Free booking confirmation SMS failed', [
+                            'booking_id' => $confirmedBookingId,
+                            'error' => $e->getMessage(),
+                        ]);
+                    }
+                });
             }
 
             /*
@@ -686,6 +760,34 @@ class BookingService
 
             /*
             |--------------------------------------------------------------------------
+            | Payment safety checks BEFORE cancellation
+            |--------------------------------------------------------------------------
+            */
+
+            $hasPaidPayment = Payment::query()
+                ->where('booking_id', $booking->id)
+                ->whereIn('type', ['deposit', 'remaining'])
+                ->where('status', 'paid')
+                ->exists();
+
+            $hasUnresolvedGatewayPayment = Payment::query()
+                ->where('booking_id', $booking->id)
+                ->whereIn('type', ['deposit', 'remaining'])
+                ->where('status', 'pending')
+                ->where(function ($query) {
+                    $query->whereNotNull('authority')
+                        ->orWhereNotNull('initiation_token');
+                })
+                ->exists();
+
+            if ($hasUnresolvedGatewayPayment) {
+                throw ValidationException::withMessages([
+                    'booking' => 'An online payment is still pending verification. Please resolve it before cancelling.',
+                ]);
+            }
+
+            /*
+            |--------------------------------------------------------------------------
             | Store old values for Audit Log
             |--------------------------------------------------------------------------
             */
@@ -709,6 +811,44 @@ class BookingService
                 'cancelled_at' => now(),
                 'cancellation_reason' => $reason,
             ]);
+
+            /*
+            |--------------------------------------------------------------------------
+            | Release unpaid discount/referral reservations
+            |--------------------------------------------------------------------------
+            */
+
+            // A fully discounted confirmed booking has consumed its reward.
+            // Keep its usage record even if the booking is later cancelled.
+            if (
+                (float) $booking->total_amount > 0 &&
+                !$hasPaidPayment &&
+                !$hasUnresolvedGatewayPayment
+            ) {
+                app(ReferralRewardService::class)->releaseUsage($booking->id);
+            }
+
+            // A fully discounted booking has already consumed its discount.
+            // Paid bookings retain consumed discounts until refund policy is defined.
+            if ((float) $booking->total_amount > 0 && !$hasPaidPayment) {
+                $discountUsage = DiscountUsage::query()
+                    ->where('booking_id', $booking->id)
+                    ->lockForUpdate()
+                    ->first();
+
+                if ($discountUsage && $discountUsage->status === 'reserved') {
+                    $discount = DiscountCode::query()
+                        ->whereKey($discountUsage->discount_code_id)
+                        ->lockForUpdate()
+                        ->firstOrFail();
+
+                    $discountUsage->update(['status' => 'released']);
+
+                    if ((int) $discount->usage_count > 0) {
+                        $discount->decrement('usage_count');
+                    }
+                }
+            }
 
             /*
             |--------------------------------------------------------------------------
@@ -1359,3 +1499,4 @@ class BookingService
         });
     }
 }
+

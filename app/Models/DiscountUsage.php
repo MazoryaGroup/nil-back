@@ -9,11 +9,16 @@ class DiscountUsage extends Model
 {
     protected $table = 'discount_usages';
 
+    public const STATUS_RESERVED = 'reserved';
+    public const STATUS_CONSUMED = 'consumed';
+    public const STATUS_RELEASED = 'released';
+
     protected $fillable = [
         'discount_code_id',
         'client_id',
         'booking_id',
         'discount_amount',
+        'status',
     ];
 
     protected $casts = [
@@ -42,5 +47,20 @@ class DiscountUsage extends Model
             Booking::class,
             'booking_id'
         );
+    }
+
+    public function isReserved(): bool
+    {
+        return $this->status === self::STATUS_RESERVED;
+    }
+
+    public function isConsumed(): bool
+    {
+        return $this->status === self::STATUS_CONSUMED;
+    }
+
+    public function isReleased(): bool
+    {
+        return $this->status === self::STATUS_RELEASED;
     }
 }

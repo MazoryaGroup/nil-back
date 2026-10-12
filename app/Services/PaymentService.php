@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\Booking;
 use App\Models\Payment;
+use App\Models\DiscountUsage;
 use App\Models\AccountingTransaction;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
@@ -1383,6 +1384,22 @@ class PaymentService
         $booking->update($updateData);
 
         $booking->refresh();
+
+        // Mark a generic discount as consumed once the booking is confirmed.
+        // This is safe on retries: only reserved usages are updated.
+        if (in_array($booking->status, ['confirmed', 'completed'], true)) {
+            DiscountUsage::query()
+                ->where('booking_id', $booking->id)
+                ->where('status', 'reserved')
+                ->update(['status' => 'consumed']);
+        }
+
+        // Finalize reserved referral rewards after booking confirmation.
+        // The payment methods call this within their existing DB transaction.
+        // consumeUsage() is idempotent for already-consumed rewards.
+        if (in_array($booking->status, ['confirmed', 'completed'], true)) {
+            app(ReferralRewardService::class)->consumeUsage($booking->id);
+        }
 
         /*
         |--------------------------------------------------------------------------

@@ -76,8 +76,8 @@ class BlogResource extends Resource
                         Forms\Components\Select::make('author_type')
                             ->label('Author')
                             ->options([
-                                'wachaar' => 'Wachaar',
-                                Artist::class => 'Artist',
+                                'NIL' => 'NIL',
+
                             ])
                             ->live()
                             ->required()

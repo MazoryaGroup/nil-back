@@ -15,27 +15,27 @@ class ReferralRewardUsage extends Model
         'referral_reward_rule_id',
         'referral_count',
         'discount_amount',
+        'status',
+        'active_rule_id',
     ];
 
     protected $casts = [
+        'client_id' => 'integer',
+        'booking_id' => 'integer',
+        'referral_reward_rule_id' => 'integer',
         'referral_count' => 'integer',
         'discount_amount' => 'decimal:2',
+        'active_rule_id' => 'integer',
     ];
 
     public function client(): BelongsTo
     {
-        return $this->belongsTo(
-            Client::class,
-            'client_id'
-        );
+        return $this->belongsTo(Client::class, 'client_id');
     }
 
     public function booking(): BelongsTo
     {
-        return $this->belongsTo(
-            Booking::class,
-            'booking_id'
-        );
+        return $this->belongsTo(Booking::class, 'booking_id');
     }
 
     public function rule(): BelongsTo

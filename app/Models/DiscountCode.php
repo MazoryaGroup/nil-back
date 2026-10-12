@@ -35,6 +35,13 @@ class DiscountCode extends Model
         'is_active' => 'boolean',
     ];
 
+    public function setCodeAttribute($value): void
+    {
+        $this->attributes['code'] = strtoupper(
+            trim((string) $value)
+        );
+    }
+
     public function usages(): HasMany
     {
         return $this->hasMany(
@@ -43,4 +50,3 @@ class DiscountCode extends Model
         );
     }
 }
-

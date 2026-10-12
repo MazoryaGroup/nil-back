@@ -273,15 +273,39 @@ class BookingResource extends Resource
                             number_format((float) $state) . ' تومان'
                     )
                     ->sortable(),
+                Tables\Columns\TextColumn::make('has_discount')
+                    ->label('وضعیت تخفیف')
+                    ->state(
+                        fn (Booking $record): string =>
+                        (float) $record->discount_amount > 0
+                            ? 'دارای تخفیف'
+                            : 'بدون تخفیف'
+                    )
+                    ->badge()
+                    ->color(
+                        fn (string $state): string =>
+                        $state === 'دارای تخفیف'
+                            ? 'success'
+                            : 'gray'
+                    )
+                    ->icon(
+                        fn (string $state): string =>
+                        $state === 'دارای تخفیف'
+                            ? 'heroicon-o-check-circle'
+                            : 'heroicon-o-minus-circle'
+                    ),
 
                 Tables\Columns\TextColumn::make('discount_amount')
-                    ->label('تخفیف')
+                    ->label('مبلغ تخفیف')
                     ->formatStateUsing(
                         fn ($state) =>
                             number_format((float) $state) . ' تومان'
                     )
-                    ->toggleable(isToggledHiddenByDefault: true),
-
+                    ->color(
+                        fn ($state) =>
+                        (float) $state > 0 ? 'success' : 'gray'
+                    )
+                    ->sortable(),
                 Tables\Columns\TextColumn::make('total_amount')
                     ->label('مبلغ نهایی')
                     ->formatStateUsing(

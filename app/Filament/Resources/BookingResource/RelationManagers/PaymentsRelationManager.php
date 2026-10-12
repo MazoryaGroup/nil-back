@@ -145,9 +145,12 @@ class PaymentsRelationManager extends RelationManager
 
                 $paymentService = app(PaymentService::class);
 
-                $remaining = $paymentService
+                $remaining = (float) $paymentService
                     ->getBookingRemainingAmount($booking);
 
+                $subtotal = (float) $booking->subtotal;
+                $discountAmount = (float) $booking->discount_amount;
+                $hasDiscount = $discountAmount > 0;
                 $total = (float) $booking->total_amount;
 
                 $grossPaid = (float) Payment::query()
@@ -163,39 +166,30 @@ class PaymentsRelationManager extends RelationManager
                     ->sum('amount');
 
                 $netPaid = max(0, $grossPaid - $refunded);
-
                 $overpaid = max(0, $netPaid - $total);
 
-                $format = fn ($amount) =>
+                $format = fn ($amount): string =>
                     number_format((float) $amount) . ' تومان';
 
+                $discountBadge = $hasDiscount
+                    ? '<span style="display:inline-block;padding:4px 10px;border-radius:8px;background:#dcfce7;color:#166534;font-weight:700">دارای تخفیف</span>'
+                    : '<span style="display:inline-block;padding:4px 10px;border-radius:8px;background:#f3f4f6;color:#6b7280;font-weight:700">بدون تخفیف</span>';
+
                 return new HtmlString(
-                    '<div style="display:flex;gap:25px;flex-wrap:wrap;
-        padding:15px 0;direction:rtl">
-
-            <div>
-                <strong>مبلغ نهایی:</strong>
-                ' . $format($total) . '
-            </div>
-
-            <div>
-                <strong>پرداخت خالص:</strong>
-                ' . $format($netPaid) . '
-            </div>
-
-            <div>
-                <strong>مانده بدهی:</strong>
-                ' . $format($remaining) . '
-            </div>
-
-            <div>
-                <strong>اضافه‌پرداخت:</strong>
-                <span style="font-weight:bold;color:#d97706">
-                    ' . $format($overpaid) . '
-                </span>
-            </div>
-
-        </div>'
+                    '<div style="display:flex;gap:18px 25px;flex-wrap:wrap;align-items:center;padding:15px 0;direction:rtl">'
+                    . '<div><strong>شماره رزرو:</strong> #' . (int) $booking->id . '</div>'
+                    . '<div><strong>جمع خدمات:</strong> ' . $format($subtotal) . '</div>'
+                    . '<div><strong>وضعیت تخفیف:</strong> ' . $discountBadge . '</div>'
+                    . '<div><strong>مبلغ تخفیف:</strong> '
+                    . '<span style="font-weight:700;color:' . ($hasDiscount ? '#15803d' : '#6b7280') . '">'
+                    . $format($discountAmount) . '</span></div>'
+                    . '<div><strong>مبلغ نهایی:</strong> ' . $format($total) . '</div>'
+                    . '<div><strong>پرداخت خالص:</strong> ' . $format($netPaid) . '</div>'
+                    . '<div><strong>مانده بدهی:</strong> ' . $format($remaining) . '</div>'
+                    . '<div><strong>اضافه‌پرداخت:</strong> '
+                    . '<span style="font-weight:bold;color:#d97706">'
+                    . $format($overpaid) . '</span></div>'
+                    . '</div>'
                 );
             })
 
